@@ -11,7 +11,7 @@
     <name>kafka-connector</name>
 
     <properties>
-        <kafka.version>3.4.0</kafka.version>
+        <kafka.version>5.3.0-ccs</kafka.version>
         <junit.version>4.12</junit.version>
         <odps.sdk.version>0.45.0-SNAPSHOT</odps.sdk.version>
         <kafka.connect.storage.common.version>11.1.4</kafka.connect.storage.common.version>
