@@ -27,9 +27,9 @@ public class StsService {
             request.setEndpoint(stsEndpoint);
 
             request.setRoleArn(buildRoleArn(ownId, roleName));
-            request.setActionName("AssumeRoleWithServiceIdentity");
+            request.setActionName("AssumeRole");
             request.putQueryParameter("AssumeRoleFor", ownId);
-            request.setDurationSeconds(12 * 60 * 60L);
+            request.setDurationSeconds(1 * 60 * 60L);
 
             AssumeRoleResponse response = client.getAcsResponse(request);
             String userAk = response.getCredentials().getAccessKeyId();
