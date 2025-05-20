@@ -14,9 +14,18 @@ public class STSAccountGenerator implements AccountGenerator<StsAccount> {
 
   @Override
   public StsAccount generate(MaxComputeSinkConnectorConfig config) {
-    Map<String, String> env = System.getenv();
-    String ak = env.getOrDefault("ACCESS_ID", "");
-    String sk = env.getOrDefault("ACCESS_KEY", "");
+    String
+        ak =
+        config.getString(MaxComputeSinkConnectorConfig.BaseParameter.ACCESS_ID.getName());
+    String
+        sk =
+        config.getString(MaxComputeSinkConnectorConfig.BaseParameter.ACCESS_KEY.getName());
+    
+    if (ak == null || ak.isEmpty() || sk == null || sk.isEmpty()) {
+      Map<String, String> env = System.getenv();
+      ak = env.getOrDefault("ALIBABA_CLOUD_ACCESS_KEY_ID", "");
+      sk = env.getOrDefault("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "");
+    }
 
     String
         accountId =
