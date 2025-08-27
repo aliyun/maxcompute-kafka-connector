@@ -1,7 +1,11 @@
 package com.aliyun.odps.kafka.connect.utils;
 
+import com.aliyun.credentials.Client;
+import com.aliyun.credentials.models.Config;
+import com.aliyun.credentials.provider.AlibabaCloudCredentialsProvider;
 import com.aliyun.odps.Odps;
 import com.aliyun.odps.account.Account;
+import com.aliyun.odps.account.AklessAccount;
 import com.aliyun.odps.kafka.connect.MaxComputeSinkConnectorConfig;
 import com.aliyun.odps.kafka.connect.account.AccountFactory;
 import com.aliyun.odps.kafka.connect.account.AccountGenerator;
@@ -9,10 +13,16 @@ import com.aliyun.odps.kafka.connect.account.IAccountFactory;
 import com.aliyun.odps.kafka.connect.account.impl.AliyunAccountGenerator;
 import com.aliyun.odps.kafka.connect.account.impl.STSAccountGenerator;
 import com.aliyun.odps.utils.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.lang.reflect.Field;
 
 public class OdpsUtils {
 
   private static final IAccountFactory<AccountGenerator<?>> accountFactory = new AccountFactory<>();
+
+  private static final Logger LOGGER = LoggerFactory.getLogger(OdpsUtils.class);
 
   public static Odps getOdps(MaxComputeSinkConnectorConfig config) {
     String
@@ -24,8 +34,21 @@ public class OdpsUtils {
     } else if (accountType.equalsIgnoreCase(Account.AccountProvider.ALIYUN.toString())) {
       account = accountFactory.getGenerator(AliyunAccountGenerator.class).generate(config);
     } else {
-      throw new RuntimeException(
-          String.format("Please check your ACCOUNT_TYPE config. Current: [%s].", accountType));
+      LOGGER.info("use akless account to get credencial.");
+      Config credencialConfig = Config.build(config.getConfigMap());
+      try {
+        Client client = new Client(credencialConfig);
+        Field field = Client.class.getDeclaredField("credentialsProvider");
+        field.setAccessible(true); // 破除 private 限制
+
+        AlibabaCloudCredentialsProvider provider =
+                (AlibabaCloudCredentialsProvider) field.get(client);
+        account = new AklessAccount(provider);
+
+      } catch (Exception e) {
+        LOGGER.error("get akless account failed!", e);
+        throw new RuntimeException(e);
+      }
     }
 
     Odps odps = new Odps(account);

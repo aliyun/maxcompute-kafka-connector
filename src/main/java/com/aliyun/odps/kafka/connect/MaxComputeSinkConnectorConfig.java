@@ -76,13 +76,20 @@ public class MaxComputeSinkConnectorConfig extends AbstractConfig {
   //  default value
   public static final long DEFAULT_CLIENT_TIME_OUT_MS = 11 * 60 * 60 * 1000; // 11 hour
 
+  private final Map<String, String> configMap;
+
 
   public MaxComputeSinkConnectorConfig(ConfigDef config, Map<String, String> parsedConfig) {
     super(config, parsedConfig);
+    this.configMap = parsedConfig;
   }
 
   public MaxComputeSinkConnectorConfig(Map<String, String> parsedConfig) {
     this(conf(), parsedConfig);
+  }
+
+  public Map<String, String> getConfigMap() {
+    return configMap;
   }
 
   public static ConfigDef conf() {
