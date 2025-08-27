@@ -22,6 +22,7 @@ package com.aliyun.odps.kafka.connect;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -30,6 +31,7 @@ import java.util.Objects;
 import java.util.TimeZone;
 import java.util.concurrent.Callable;
 
+import com.aliyun.odps.tunnel.io.StreamRecordPackImpl;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.slf4j.Logger;
@@ -220,6 +222,17 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
                 .setPartitionSpec(partitionSpec)
                 .setCreatePartition(true)
                 .build();
+        if (streamPack != null) {
+          try {
+            StreamRecordPackImpl packImpl = (StreamRecordPackImpl) streamPack;
+            Field sessionField = StreamRecordPackImpl.class.getDeclaredField("session");
+            sessionField.setAccessible(true); // 破除 private 限制
+            sessionField.set(packImpl, streamSession);
+          } catch (Exception e) {
+            LOGGER.error("Refresh sts token failed: cannot recreate stream pack", e);
+            throw new RuntimeException(e);
+          }
+        }
         flushStreamPackWithRetry(retryTimes);
         streamPack = recreateRecordPack();
       } catch (TunnelException e) {
