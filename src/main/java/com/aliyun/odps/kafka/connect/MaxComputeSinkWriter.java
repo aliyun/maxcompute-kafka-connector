@@ -220,7 +220,6 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
                 .setPartitionSpec(partitionSpec)
                 .setCreatePartition(true)
                 .build();
-        flushStreamPackWithRetry(retryTimes);
         streamPack = recreateRecordPack();
       } catch (TunnelException e) {
         LOGGER.error("Refresh sts token failed: cannot recreate stream session", e);
