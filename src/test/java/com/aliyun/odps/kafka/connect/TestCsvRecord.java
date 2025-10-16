@@ -66,6 +66,7 @@ public class TestCsvRecord extends TestConnectorBase {
     connectorProps.put("table", tableName);
     // Set CSV format
     connectorProps.put("format", "CSV");
+    connectorProps.put("use_streaming", "true");
     // some specific configuration for the connector
     connectorProps.put(CONNECTOR_CLASS_CONFIG, TestMCSinkConnector.class.getName());
     connectorProps.put(KEY_CONVERTER_CLASS_CONFIG, StringConverter.class.getName());

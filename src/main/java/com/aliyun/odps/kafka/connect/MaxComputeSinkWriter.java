@@ -373,7 +373,8 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
 
   private void resetStreamUploadSessionIfNeeded(Long timestamp) throws OdpsException, IOException {
     if (needToResetUploadSession(timestamp)) {
-      LOGGER.info("Reset stream upload session, last timestamp: {}, current: {}",
+      LOGGER.info("Thread({}) Reset stream upload session, last timestamp: {}, current: {}",
+                  Thread.currentThread().getId(),
                   partitionStartTimestamp,
                   timestamp);
       // try flushing the pack
@@ -491,6 +492,8 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
       }
     }
 
+    LOGGER.info("Generate partition spec: {}, timestamp {}", partitionSpec, timestamp);
+
     return partitionSpec;
   }
 
@@ -519,6 +522,9 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
       }
 
       partitionStartTimestamp = partitionStartDatetime.toEpochSecond();
+
+      LOGGER.info("Thread({}) reset partition start timestamp to {}",
+                  Thread.currentThread().getId(), partitionStartTimestamp);
     }
   }
 }

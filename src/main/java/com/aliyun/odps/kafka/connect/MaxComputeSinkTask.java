@@ -210,13 +210,16 @@ public class MaxComputeSinkTask extends SinkTask {
       }
     }
 
-    needSyncCommit = !hasGap;
+    needSyncCommit = hasGap;
+    if (hasGap) {
+      LOGGER.info("Has gap, need sync commit.");
+    }
     return toCommitOffsets;
   }
 
   @Override
   public final void flush(Map<TopicPartition, OffsetAndMetadata> offsets) {
-    LOGGER.debug("Thread({}) flush, offsets {}", Thread.currentThread().getId(), offsets);
+    LOGGER.info("Thread({}) kafka flush, offsets {}", Thread.currentThread().getId(), offsets);
     if (LOGGER.isInfoEnabled()) {
       for (Entry<TopicPartition, OffsetAndMetadata> entry : offsets.entrySet()) {
         LOGGER.debug("Thread({}) FLUSH (topic: {}, partition: {})", Thread.currentThread().getId(),
