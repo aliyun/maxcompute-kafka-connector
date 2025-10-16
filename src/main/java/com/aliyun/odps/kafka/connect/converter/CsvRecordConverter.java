@@ -25,10 +25,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
 import java.util.LinkedList;
 import java.util.List;
+
+import org.apache.kafka.connect.sink.SinkRecord;
 
 import com.aliyun.odps.Column;
 import com.aliyun.odps.TableSchema;
@@ -36,7 +36,6 @@ import com.aliyun.odps.data.ArrayRecord;
 import com.aliyun.odps.data.Record;
 import com.aliyun.odps.kafka.connect.utils.ConverterHelper;
 import com.csvreader.CsvReader;
-import org.apache.kafka.connect.sink.SinkRecord;
 
 /**
  * Convert a {@link SinkRecord} to a {@link Record} with the following schema:
@@ -50,10 +49,9 @@ import org.apache.kafka.connect.sink.SinkRecord;
 public class CsvRecordConverter implements RecordConverter {
 
     private static String NULL_TOKEN = "\\N";
-    private static DateFormat DATETIME_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
 
-    private TableSchema schema;
-    private RecordConverterBuilder.Mode mode;
+    private final TableSchema schema;
+    private final RecordConverterBuilder.Mode mode;
     private List<Integer> userColIndex = new LinkedList<>();
 
     public CsvRecordConverter(TableSchema schema, RecordConverterBuilder.Mode mode) {

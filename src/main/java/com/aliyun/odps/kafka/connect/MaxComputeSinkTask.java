@@ -20,21 +20,15 @@
 
 package com.aliyun.odps.kafka.connect;
 
-import java.io.IOException;
-import java.io.PrintWriter;
-import java.io.StringWriter;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Queue;
-import java.util.Set;
-import java.util.TimeZone;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -46,52 +40,39 @@ import org.apache.kafka.connect.sink.SinkTask;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.aliyun.odps.Column;
-import com.aliyun.odps.Instance;
 import com.aliyun.odps.Odps;
-import com.aliyun.odps.OdpsException;
-import com.aliyun.odps.TableSchema;
 import com.aliyun.odps.account.Account;
-import com.aliyun.odps.data.ResultSet;
 import com.aliyun.odps.kafka.KafkaWriter;
+import com.aliyun.odps.kafka.connect.MaxComputeSinkConnectorConfig.BaseParameter;
+import com.aliyun.odps.kafka.connect.converter.RecordConverter;
 import com.aliyun.odps.kafka.connect.converter.RecordConverterBuilder;
 import com.aliyun.odps.kafka.connect.utils.OdpsUtils;
-import com.aliyun.odps.task.SQLTask;
-import com.aliyun.odps.type.TypeInfo;
-import com.aliyun.odps.type.TypeInfoParser;
 import com.aliyun.odps.utils.StringUtils;
-import com.google.gson.JsonArray;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
-
 
 public class MaxComputeSinkTask extends SinkTask {
 
-
   private static final Logger LOGGER = LoggerFactory.getLogger(MaxComputeSinkTask.class);
+  private final ConcurrentHashMap<TopicPartition, SinkStatusContext>
+    sinkStatus =
+    new ConcurrentHashMap<>();
+  private final Queue<Future<Boolean>> writerTasks = new LinkedList<>();
 
   private Odps odps;
   private String project;
   private String table;
-  private RecordConverterBuilder converterBuilder;
-  private PartitionWindowType partitionWindowType;
-  private TimeZone tz;
-  private Map<TopicPartition, MaxComputeSinkWriter> writers = new ConcurrentHashMap<>();
+  private RecordConverter recordConverter;
+
   private KafkaWriter runtimeErrorWriter = null;
   private ExecutorService executor; // used to execute multi-thread sinkWriter
-  private boolean multiWriteMode = false;
+
   private boolean needSyncCommit = false;
-  private boolean skipErrorRecords = false;
-  private final Map<TopicPartition, SinkStatusContext> sinkStatus = new ConcurrentHashMap<>();
-  private final Queue<Future<Boolean>> writerTasks = new LinkedList<>();
-  // record the offset consumed by tunnel writer
 
   /*
     Performance metrics
    */
   private long totalBytesSentByClosedWriters = 0;
   private long startTimestamp;
-  private final Map<TopicPartition, Long> partitionRecordsNumPerEpoch = new ConcurrentHashMap<>();
+
   /**
    * For Account
    */
@@ -99,551 +80,262 @@ public class MaxComputeSinkTask extends SinkTask {
   private long odpsCreateLastTime;
   private long timeout;
   private String accountType;
-  private String tunnelEndpoint;
-
   private boolean useStreamTunnel;
-
-  private int bufferSizeKB = 64 * 1024;
-
   private int batchSize; // max_records in queue when sink writer can do run ;
-
-  private int retryTimes;
-
-
-  @Override
-  public String version() {
-    return VersionUtil.getVersion();
-  }
-
-
-  @Override
-  public void open(Collection<TopicPartition> partitions) {
-    LOGGER.debug("Thread(" + Thread.currentThread().getId() + ") Enter OPEN");
-    for (TopicPartition partition : partitions) {
-      LOGGER.info("Thread(" + Thread.currentThread().getId() + ") OPEN (topic: " +
-                  partition.topic() + ", partition: " + partition.partition() + ")");
-    }
-
-    initOrRebuildOdps();
-    writers.clear();
-    sinkStatus.clear();
-    writerTasks.clear();
-    for (TopicPartition partition : partitions) {
-      // TODO: Consider a way to resume when running in key or value mode
-//      resumeCheckPoint(partition);
-      MaxComputeSinkWriter writer = new MaxComputeSinkWriter(
-          config,
-          project,
-          table,
-          converterBuilder.build(),
-          bufferSizeKB,
-          partitionWindowType,
-          tz, useStreamTunnel,
-          retryTimes,
-          tunnelEndpoint);
-      writers.put(partition, writer);
-      partitionRecordsNumPerEpoch.put(partition, 0L);
-      LOGGER.info("Thread(" + Thread.currentThread().getId() +
-                  ") Initialize writer successfully for (topic: " + partition.topic() +
-                  ", partition: " + partition.partition() + ", failRetry: " + retryTimes + ")");
-    }
-  }
-
-  /**
-   * Start from last committed offset
-   */
-  private void resumeCheckPoint(TopicPartition partition) {
-    StringBuilder queryBuilder = new StringBuilder();
-    queryBuilder.append("SELECT MAX(offset) as offset ")
-        .append("FROM ").append(table).append(" ")
-        .append("WHERE topic=\"").append(partition.topic()).append("\" ")
-        .append("AND partition=").append(partition.partition()).append(";");
-
-    try {
-      Instance findLastCommittedOffset = SQLTask.run(odps, queryBuilder.toString());
-      findLastCommittedOffset.waitForSuccess();
-      ResultSet res = SQLTask.getResultSet(findLastCommittedOffset);
-      Long lastCommittedOffset = res.next().getBigint("offset");
-      LOGGER.info("Thread(" + Thread.currentThread().getId() +
-                  ") Last committed offset for (topic: " + partition.topic() + ", partition: "
-                  + partition.partition() + "): " + lastCommittedOffset);
-      if (lastCommittedOffset != null) {
-        // Offset should be reset to the last committed plus one, otherwise the last committed
-        // record will be duplicated
-        context.offset(partition, lastCommittedOffset + 1);
-      }
-    } catch (OdpsException | IOException e) {
-      LOGGER
-          .error("Thread(" + Thread.currentThread().getId() + ") Resume from checkpoint failed", e);
-      throw new RuntimeException(e);
-    }
-  }
 
   @Override
   public void start(Map<String, String> map) {
-    LOGGER.info("Thread(" + Thread.currentThread().getId() + ") Enter START");
+    LOGGER.info("Thread({}) Enter START", Thread.currentThread().getId());
 
     startTimestamp = System.currentTimeMillis();
 
     config = new MaxComputeSinkConnectorConfig(map);
-    accountType =
-        config.getString(MaxComputeSinkConnectorConfig.BaseParameter.ACCOUNT_TYPE.getName());
-    timeout =
-        config.getLong(MaxComputeSinkConnectorConfig.BaseParameter.CLIENT_TIMEOUT_MS.getName());
-    bufferSizeKB =
-        config.getInt(MaxComputeSinkConnectorConfig.BaseParameter.BUFFER_SIZE_KB.getName());
-    retryTimes =
-        config.getInt(MaxComputeSinkConnectorConfig.BaseParameter.FAIL_RETRY_TIMES.getName());
+    accountType = config.getString(BaseParameter.ACCOUNT_TYPE.getName());
+    timeout = config.getLong(BaseParameter.CLIENT_TIMEOUT_MS.getName());
 
-    String
-        endpoint =
-        config.getString(MaxComputeSinkConnectorConfig.BaseParameter.MAXCOMPUTE_ENDPOINT.getName());
-    project =
-        config.getString(MaxComputeSinkConnectorConfig.BaseParameter.MAXCOMPUTE_PROJECT.getName());
-    table =
-        config.getString(MaxComputeSinkConnectorConfig.BaseParameter.MAXCOMPUTE_TABLE.getName());
-    tunnelEndpoint =
-        config.getString(MaxComputeSinkConnectorConfig.BaseParameter.TUNNEL_ENDPOINT.getName());
-    batchSize =
-        config.getInt(MaxComputeSinkConnectorConfig.BaseParameter.RECORD_BATCH_SIZE.getName());
-    Integer
-        poolSize =
-        config.getInt(MaxComputeSinkConnectorConfig.BaseParameter.POOL_SIZE.getName());
-    skipErrorRecords =
-        config.getBoolean(MaxComputeSinkConnectorConfig.BaseParameter.SKIP_ERROR.getName());
-    if (poolSize > 1) {
-      executor = Executors.newFixedThreadPool(poolSize); // multi-thread to run record sink to MC
-      multiWriteMode = true; // use new mode;
-    }
+    String endpoint = config.getString(BaseParameter.MAXCOMPUTE_ENDPOINT.getName());
+    project = config.getString(BaseParameter.MAXCOMPUTE_PROJECT.getName());
+    table = config.getString(BaseParameter.MAXCOMPUTE_TABLE.getName());
+    batchSize = config.getInt(BaseParameter.RECORD_BATCH_SIZE.getName());
+    int poolSize = config.getInt(BaseParameter.POOL_SIZE.getName());
+    executor = Executors.newFixedThreadPool(poolSize); // multi-thread to run record sink to MC
     // Init odps
-    odps = OdpsUtils.getOdps(config);
-    odpsCreateLastTime = System.currentTimeMillis();
-    odps.setEndpoint(endpoint);
+    initOrRebuildOdps();
     // Init converter builder
     RecordConverterBuilder.Format format = RecordConverterBuilder.Format.valueOf(
-        config.getString(MaxComputeSinkConnectorConfig.BaseParameter.FORMAT.getName()));
+      config.getString(BaseParameter.FORMAT.getName()));
     RecordConverterBuilder.Mode mode = RecordConverterBuilder.Mode.valueOf(
-        config.getString(MaxComputeSinkConnectorConfig.BaseParameter.MODE.getName()));
-    converterBuilder = new RecordConverterBuilder();
+      config.getString(BaseParameter.MODE.getName()));
+
+    RecordConverterBuilder converterBuilder = new RecordConverterBuilder();
     converterBuilder.format(format).mode(mode);
     converterBuilder.schema(odps.tables().get(table).getSchema());
+    recordConverter = converterBuilder.build();
 
-    // Parse partition window size
-    partitionWindowType = PartitionWindowType.valueOf(
-        config.getString(
-            MaxComputeSinkConnectorConfig.BaseParameter.PARTITION_WINDOW_TYPE.getName()));
-    // Parse time zone
-    tz =
-        TimeZone.getTimeZone(
-            config.getString(MaxComputeSinkConnectorConfig.BaseParameter.TIME_ZONE.getName()));
-    useStreamTunnel =
-        config.getBoolean(MaxComputeSinkConnectorConfig.BaseParameter.USE_STREAM_TUNNEL.getName());
+    useStreamTunnel = config.getBoolean(BaseParameter.USE_STREAM_TUNNEL.getName());
 
     if (useStreamTunnel) {
-      LOGGER.info("MAXCOMPUTE STREAMING TUNNEL ENABLED.");
+      LOGGER.info("MaxCompute Streaming Tunnel enable.");
     }
 
-    if (!StringUtils.isNullOrEmpty(
-        config.getString(
-            MaxComputeSinkConnectorConfig.BaseParameter.RUNTIME_ERROR_TOPIC_NAME.getName()))
-        && !StringUtils.isNullOrEmpty(
-        config.getString(
-            MaxComputeSinkConnectorConfig.BaseParameter.RUNTIME_ERROR_TOPIC_BOOTSTRAP_SERVERS.getName()))) {
+    if (
+      !StringUtils.isNullOrEmpty(config.getString(BaseParameter.RUNTIME_ERROR_TOPIC_NAME.getName()))
+      && !StringUtils.isNullOrEmpty(
+        config.getString(BaseParameter.RUNTIME_ERROR_TOPIC_BOOTSTRAP_SERVERS.getName()))) {
 
       runtimeErrorWriter = new KafkaWriter(config);
-      LOGGER.info(
-          "Thread(" + Thread.currentThread().getId() + ") new runtime error kafka writer done");
+      LOGGER.info("Thread({}) new runtime error kafka writer done", Thread.currentThread().getId());
     }
 
-    LOGGER.info("Thread(" + Thread.currentThread().getId() + ") Start MaxCompute sink task done");
-  }
-
-  /**
-   * 从writer队列中获取一个新的可用的writer
-   *
-   * @param partition
-   * @return MaxComputeSinkWriter
-   */
-  private MaxComputeSinkWriter genSinkWriter(TopicPartition partition) {
-    return new MaxComputeSinkWriter(config,
-                                    project,
-                                    table,
-                                    converterBuilder.build(),
-                                    bufferSizeKB,
-                                    partitionWindowType,
-                                    tz, useStreamTunnel,
-                                    retryTimes,
-                                    tunnelEndpoint);
-  }
-
-  /**
-   * 将sinkRecord的缓冲区队列中剩余的数据发送出去
-   *
-   * @return List<Future < MaxComputeSinkWriter> >
-   */
-  private void flushRecordBuffer() {
-    for (Entry<TopicPartition, SinkStatusContext> item : sinkStatus.entrySet()) {
-      TopicPartition partition = item.getKey();
-      SinkStatusContext curContext = item.getValue();
-      List<SinkRecord> left = curContext.getRecordQueue();
-      if (!left.isEmpty()) {
-          try {
-              MaxComputeSinkWriter curWriter = genSinkWriter(partition);
-              curWriter.setRecordBuffer(left);
-              curWriter.setErrorReporter(runtimeErrorWriter);
-              curWriter.setSinkStatusContext(curContext);
-              curWriter.setSkipError(skipErrorRecords);
-              writerTasks.add(executor.submit(curWriter));
-              sinkStatus.get(partition).resetRecordQueue();
-          }catch (Throwable e){
-              LOGGER.error("flush buffer error,partition:{},error:{} ", partition, e.getMessage(), e);
-          }
-      }
-    }
+    LOGGER.info("Thread({}) Start MaxCompute sink task done", Thread.currentThread().getId());
   }
 
   @Override
-  public Map<TopicPartition, OffsetAndMetadata> preCommit(
-      Map<TopicPartition, OffsetAndMetadata> currentOffsets) {
-    if (multiWriteMode) {
-      flushRecordBuffer();
-      if (writerTasks.isEmpty()) {
-        LOGGER.info("no data written to tunnel!");
-      }
-      while (!writerTasks.isEmpty()) {
-        try {
-          boolean result = writerTasks.poll().get();
-          if (!result) {
-            needSyncCommit = true;
-          }
-        } catch (InterruptedException | ExecutionException e) {
-          LOGGER.error("unrecoverable error happens: {} ,the task will exit! ", e.getMessage());
-          throw new RuntimeException(e);
-        }
-      }
-      if (LOGGER.isDebugEnabled()) {
-        totalBytesSentByClosedWriters = 0;
-        sinkStatus.forEach(
-            (pt, cxt) -> totalBytesSentByClosedWriters += cxt.getTotalBytesSentByWriter());
-        LOGGER.debug("Total bytes written by multi-writer :{}", totalBytesSentByClosedWriters);
-      }
-      // 本地的offset 和 currentOffsets 进行比较; 告诉其哪些partition 哪些地方已经消费了可以提交
-      Set<TopicPartition> errorPartitions = new HashSet<>();
-      for (Entry<TopicPartition, OffsetAndMetadata> entry : currentOffsets.entrySet()) {
-        TopicPartition partition = entry.getKey();
-        OffsetAndMetadata offsetAndMetadata = entry.getValue();
-        SinkStatusContext curStatus = sinkStatus.get(partition);
-        if (curStatus != null) {
-          curStatus.mergeOffset();
-          // 需要在下次put操作后立刻提交
-          needSyncCommit = !curStatus.intervalOffsetEmpty();
-          long curOffset = curStatus.getConsumedOffsets();
-          if (curOffset != -1) {
-            currentOffsets.put(partition,
-                               new OffsetAndMetadata(curOffset + 1, offsetAndMetadata.metadata()));
-            LOGGER.info("partiton:{} consumed offset: {}", partition, curOffset);
-          } else {
-            // 这里存在一种情况，空的分区可能会被分配配task,没有数据，因此，innerOffsets需要在有数据进来的时候，才创建分区类型
-            errorPartitions.add(partition);
-            LOGGER.warn("something error in consumedOffset partition: {}", partition);
-          }
-        } else {
-          errorPartitions.add(partition);
-          LOGGER.warn("no partition exist in innerOffsets");
-        }
-      }
-      errorPartitions.forEach(currentOffsets::remove);
+  public void open(Collection<TopicPartition> partitions) {
+    LOGGER.info("Thread({}) Enter OPEN", Thread.currentThread().getId());
+    for (TopicPartition partition : partitions) {
+      LOGGER.info("OPEN (topic: {}, partition: {})", partition.topic(), partition.partition());
     }
-    flush(currentOffsets);
-    return currentOffsets;
-  }
-
-  private void executeMultiWrite(Collection<SinkRecord> collection)
-      throws IOException {
-    // use multi-thread to sink data to MC ; decouple from origin mode
-    if (LOGGER.isDebugEnabled()) {
-      LOGGER.debug("Enter multiWriterExecute!~");
-    }
-    for (SinkRecord r : collection) {
-      TopicPartition partition = new TopicPartition(r.topic(), r.kafkaPartition());
-      if (!sinkStatus.containsKey(partition)) {
-        sinkStatus.put(partition,
-                       new SinkStatusContext(r.kafkaOffset() - 1, new ArrayList<>()));
-      }
-      if (sinkStatus.get(partition).containsOffset(r.kafkaOffset())) {
-        continue;
-      }
-      List<SinkRecord> cur = sinkStatus.get(partition).getRecordQueue();
-      // 需要记录当前收到的分区 offset 最小值
-      cur.add(r);
-      if (cur.size() >= batchSize) {
-        // 从writerPool中获得writer
-        MaxComputeSinkWriter curWriter = genSinkWriter(partition);
-        curWriter.setRecordBuffer(cur);
-        curWriter.setErrorReporter(runtimeErrorWriter);
-        curWriter.setSinkStatusContext(sinkStatus.get(partition));
-        curWriter.setSkipError(skipErrorRecords);
-        writerTasks.add(executor.submit(curWriter));
-        sinkStatus.get(partition).resetRecordQueue();
-      }
-    }
-    if (needSyncCommit) {
-      context.requestCommit();
-    }
+    sinkStatus.clear();
+    writerTasks.clear();
   }
 
   @Override
   public void put(Collection<SinkRecord> collection) {
-    LOGGER.debug("Thread(" + Thread.currentThread().getId() + ") Enter PUT");
-    // Epoch second
-    long time = System.currentTimeMillis() / 1000;
-    initOrRebuildOdps();
+    LOGGER.debug("Thread({}) Enter PUT", Thread.currentThread().getId());
     if (collection.isEmpty()) {
-      LOGGER.info("Thread(" + Thread.currentThread().getId() + ") Enter empty put records");
+      LOGGER.info("Thread({}) Enter empty put records", Thread.currentThread().getId());
       return;
     } else {
-      LOGGER.info("Thread(" + Thread.currentThread().getId() + ") putted records size "
-                  + collection.size());
-    }
-    if (multiWriteMode) {
-      try {
-        executeMultiWrite(collection);
-      } catch (IOException e) {
-        throw new RuntimeException(e);
-      }
-      return;
+      LOGGER.debug("Thread({}) putted records size {}", Thread.currentThread().getId(),
+                   collection.size());
     }
     for (SinkRecord r : collection) {
       TopicPartition partition = new TopicPartition(r.topic(), r.kafkaPartition());
-      MaxComputeSinkWriter writer = writers.get(partition);
-      try {
-        writer.write(r, time);
-        partitionRecordsNumPerEpoch.put(partition, partitionRecordsNumPerEpoch.get(partition) + 1);
-      } catch (IOException e) {
-        reportRuntimeError(r, e);
+      SinkStatusContext sinkStatusContext = sinkStatus.get(partition);
+      if (sinkStatusContext == null) {
+        sinkStatusContext = new SinkStatusContext(batchSize);
+        sinkStatus.put(partition, sinkStatusContext);
+      }
+      if (sinkStatusContext.containsOffset(r.kafkaOffset())) {
+        continue;
+      }
+      List<SinkRecord> cur = sinkStatusContext.getRecordQueue();
+      // 需要记录当前收到的分区 offset 最小值
+      cur.add(r);
+      if (cur.size() >= batchSize) {
+        MaxComputeSinkWriter curWriter = createSinkWriter(cur, sinkStatusContext);
+        writerTasks.add(executor.submit(curWriter));
+        sinkStatusContext.resetRecordQueue();
       }
     }
-  }
-
-  private void reportRuntimeError(SinkRecord record, IOException e) {
-    if (runtimeErrorWriter != null) {
-      LOGGER.info("Thread(" + Thread.currentThread().getId() + ") skip runtime error", e);
-      runtimeErrorWriter.write(record);
-    } else {
-      if (!skipErrorRecords) {
-        throw new RuntimeException(e);
-      }
-      LOGGER.warn("Runtime error when handling: {}, skip the record", record.toString());
+    if (needSyncCommit) {
+      LOGGER.info("Thread({}) Sync commit", Thread.currentThread().getId());
+      super.context.requestCommit();
     }
   }
 
   @Override
-  public void flush(Map<TopicPartition, OffsetAndMetadata> map) {
-    if (LOGGER.isDebugEnabled()) {
-      LOGGER.info("Thread(" + Thread.currentThread().getId() + ") Enter FLUSH");
-      for (Entry<TopicPartition, OffsetAndMetadata> entry : map.entrySet()) {
-        LOGGER.info("Thread(" + Thread.currentThread().getId() + ") FLUSH "
-                    + "(topic: " + entry.getKey().topic() +
-                    ", partition: " + entry.getKey().partition() + ")");
+  public final Map<TopicPartition, OffsetAndMetadata> preCommit(
+    Map<TopicPartition, OffsetAndMetadata> currentOffsets) {
+    LOGGER.info("Thread({}) PreCommit, currentOffsets {}", Thread.currentThread().getId(),
+                currentOffsets);
+    Map<TopicPartition, OffsetAndMetadata> toCommitOffsets = new HashMap<>();
+    flush(currentOffsets);
+
+    // 本地的offset 和 currentOffsets 进行比较; 告诉其哪些partition 哪些地方已经消费了可以提交
+
+    boolean hasGap = false;
+    for (Entry<TopicPartition, OffsetAndMetadata> entry : currentOffsets.entrySet()) {
+      TopicPartition partition = entry.getKey();
+      OffsetAndMetadata offsetAndMetadata = entry.getValue();
+      SinkStatusContext curStatus = sinkStatus.get(partition);
+
+      if (curStatus == null) {
+        LOGGER.warn("no partition exist in innerOffsets");
+        continue;
+      }
+      long consumedOffset = curStatus.mergeOffset();
+      LOGGER.info(
+        "PreCommit Partition {}, currentOffset {}, localOffsetRangeMap {}, localConsumedOffSet {}",
+        partition, offsetAndMetadata.offset(), curStatus.getOffsetRangeMap(), consumedOffset + 1);
+
+      // merge后还不为空，说明存在断档，需要在下次put操作后立刻提交
+      hasGap |= !curStatus.isEmpty();
+      if (consumedOffset != -1) {
+        toCommitOffsets.put(partition,
+                            new OffsetAndMetadata(consumedOffset + 1,
+                                                  offsetAndMetadata.metadata()));
+        LOGGER.info("partition:{} consumed offset: {}", partition, consumedOffset);
+      }
+    }
+
+    needSyncCommit = !hasGap;
+    return toCommitOffsets;
+  }
+
+  @Override
+  public final void flush(Map<TopicPartition, OffsetAndMetadata> offsets) {
+    LOGGER.debug("Thread({}) flush, offsets {}", Thread.currentThread().getId(), offsets);
+    if (LOGGER.isInfoEnabled()) {
+      for (Entry<TopicPartition, OffsetAndMetadata> entry : offsets.entrySet()) {
+        LOGGER.debug("Thread({}) FLUSH (topic: {}, partition: {})", Thread.currentThread().getId(),
+                     entry.getKey().topic(), entry.getKey().partition());
       }
     }
     initOrRebuildOdps();
-    if (multiWriteMode) {
-      // 新模式下已经在其他地方进行了writer的close and reset;
-      return;
-    }
-    for (Entry<TopicPartition, OffsetAndMetadata> entry : map.entrySet()) {
-      TopicPartition partition = entry.getKey();
-      MaxComputeSinkWriter writer = writers.get(partition);
-
-      // If the writer is not initialized, there is nothing to commit
-      // fast return
-      if (writer == null || partitionRecordsNumPerEpoch.get(partition) == 0) {
-        LOGGER.debug(String.format("There is %d records to write! continue!",
-                                   partitionRecordsNumPerEpoch.get(partition)));
+    // should be flush by offsets
+    for (TopicPartition partition : offsets.keySet()) {
+      //Entry<TopicPartition, SinkStatusContext> item : sinkStatus.entrySet()
+      //TopicPartition partition = item.getKey();
+      SinkStatusContext curContext = sinkStatus.get(partition);
+      if (curContext == null) {
         continue;
       }
-      writer.flush();
-
-      // Close writer
-      try {
-        writer.close();
-        partitionRecordsNumPerEpoch.put(partition, 0L);
-      } catch (IOException e) {
-        LOGGER.error(e.getMessage(), e);
-        resetOffset(partition, writer);
+      List<SinkRecord> left = curContext.getRecordQueue();
+      if (!left.isEmpty()) {
+        try {
+          MaxComputeSinkWriter curWriter = createSinkWriter(left, curContext);
+          writerTasks.add(executor.submit(curWriter));
+          curContext.resetRecordQueue();
+        } catch (Throwable e) {
+          LOGGER.error("flush buffer error,partition:{},error:{} ", partition, e.getMessage(), e);
+        }
       }
-
-      // Update bytes sent
-      totalBytesSentByClosedWriters += writer.getTotalBytes();
-
-      // reset tunnel session = null, it will be initialized the next time coming data.
-      writer.reset();
-
-//      // Create new writer
-//      MaxComputeSinkWriter newWriter = new MaxComputeSinkWriter(
-//          odps,
-//          project,
-//          table,
-//          converterBuilder.build(),
-//          64,
-//          partitionWindowType,
-//          tz);
-//      writers.put(partition, newWriter);
     }
 
-    LOGGER.info("Thread(" + Thread.currentThread().getId() + ") Total bytes sent: " +
-                totalBytesSentByClosedWriters +
-                ", elapsed time: " + ((System.currentTimeMillis()) - startTimestamp));
+    if (writerTasks.isEmpty()) {
+      LOGGER.info("no data written to tunnel!");
+    }
+
+    List<Future<Boolean>> errorFutures = new ArrayList<>();
+    while (!writerTasks.isEmpty()) {
+      Future<Boolean> f = null;
+      boolean result = false;
+      try {
+        f = writerTasks.poll();
+        result = f.get();
+      } catch (Throwable e) {
+        LOGGER.error("unrecoverable error happens: {} ,the task will exit! ", e.getMessage());
+        errorFutures.add(f);
+      }
+      if (!result) {
+        needSyncCommit = true;
+      }
+    }
+    if (!errorFutures.isEmpty()) {
+      LOGGER.error("There are {} batchs fail when flush", errorFutures.size());
+      writerTasks.addAll(errorFutures);
+    }
+
+    if (LOGGER.isInfoEnabled()) {
+      totalBytesSentByClosedWriters = 0;
+      sinkStatus.forEach(
+        (pt, cxt) -> totalBytesSentByClosedWriters += cxt.getTotalBytesSentByWriter());
+      LOGGER.info("Total bytes written by multi-writer :{}", totalBytesSentByClosedWriters);
+    }
   }
 
   @Override
   public void close(Collection<TopicPartition> partitions) {
-    LOGGER.debug("Thread(" + Thread.currentThread().getId() + ") Enter CLOSE");
-    for (TopicPartition partition : partitions) {
-      LOGGER.info("Thread(" + Thread.currentThread().getId() +
-                  ") CLOSE (topic: " + partition.topic() +
-                  ", partition: " + partition.partition() + ")");
+    if (LOGGER.isInfoEnabled()) {
+      LOGGER.info("Enter CLOSE");
+      for (TopicPartition partition : partitions) {
+        LOGGER.info("Thread({}) CLOSE (topic: {}, partition: {})", Thread.currentThread().getId(),
+                    partition.topic(), partition.partition());
+      }
     }
 
-    for (TopicPartition partition : partitions) {
-      MaxComputeSinkWriter writer = writers.get(partition);
-
-      // If the writer is not initialized, there is nothing to commit
-      if (writer == null) {
-        continue;
-      }
-
-      try {
-        writer.close();
-      } catch (IOException e) {
-        LOGGER.error("Failed to close writer " + partition.toString() + ":" + e.getMessage(), e);
-        resetOffset(partition, writer);
-      }
-
-      writers.remove(partition);
-      totalBytesSentByClosedWriters += writer.getTotalBytes();
-    }
-    LOGGER.info("Thread(" + Thread.currentThread().getId() + ") Total bytes sent: " +
-                totalBytesSentByClosedWriters +
-                ", elapsed time: " + ((System.currentTimeMillis()) - startTimestamp));
+    LOGGER.info("Close Thread({}) Total bytes sent: {}, elapsed time: {}",
+                Thread.currentThread().getId(),
+                totalBytesSentByClosedWriters, System.currentTimeMillis() - startTimestamp);
   }
 
   @Override
   public void stop() {
-    LOGGER.info("Thread(" + Thread.currentThread().getId() + ") Enter STOP");
-
-    for (Entry<TopicPartition, MaxComputeSinkWriter> entry : writers.entrySet()) {
-      try {
-        entry.getValue().close();
-      } catch (IOException e) {
-        LOGGER.error("Failed to close writer " + entry.getKey().toString() + ":" + e.getMessage(),
-                     e);
-        resetOffset(entry.getKey(), entry.getValue());
-      }
-    }
-
-    writers.values().forEach(w -> totalBytesSentByClosedWriters += w.getTotalBytes());
-    writers.clear();
+    LOGGER.info("Thread({}) Enter STOP", Thread.currentThread().getId());
     if (executor != null) {
       executor.shutdown();
     }
-    LOGGER.info("Thread(" + Thread.currentThread().getId() + ") Total bytes sent: " +
-                totalBytesSentByClosedWriters +
-                ", elapsed time: " + ((System.currentTimeMillis()) - startTimestamp));
-  }
-
-  /**
-   * Reset the offset of given partition.
-   */
-  private void resetOffset(TopicPartition partition, MaxComputeSinkWriter writer) {
-    if (writer == null) {
-      StringWriter s = new StringWriter();
-      PrintWriter p = new PrintWriter(s, true);
-      p.flush();
-      LOGGER.error("Thread(" + Thread.currentThread().getId() + ") Reset offset but null " +
-                   ", topic: " + partition.topic() +
-                   ", partition: " + partition.partition() +
-                   ", stack: " + p.toString());
-      return;
-    }
-
-    LOGGER.info("Thread(" + Thread.currentThread().getId() + ") Reset offset to " +
-                writer.getMinOffset() + ", topic: " + partition.topic() +
-                ", partition: " + partition.partition());
-    // Reset offset
-    Long minOffset = writer.getMinOffset();
-    if(minOffset!=null){
-        context.offset(partition, writer.getMinOffset());
-    }
-  }
-
-  protected static TableSchema parseSchema(String json) {
-    TableSchema schema = new TableSchema();
-    try {
-      JsonObject tree = new JsonParser().parse(json).getAsJsonObject();
-
-      if (tree.has("columns") && tree.get("columns") != null) {
-        JsonArray columnsNode = tree.get("columns").getAsJsonArray();
-        for (int i = 0; i < columnsNode.size(); ++i) {
-          JsonObject n = columnsNode.get(i).getAsJsonObject();
-          schema.addColumn(parseColumn(n));
-        }
-      }
-
-      if (tree.has("partitionKeys") && tree.get("partitionKeys") != null) {
-        JsonArray columnsNode = tree.get("partitionKeys").getAsJsonArray();
-        for (int i = 0; i < columnsNode.size(); ++i) {
-          JsonObject n = columnsNode.get(i).getAsJsonObject();
-          schema.addPartitionColumn(parseColumn(n));
-        }
-      }
-    } catch (Exception e) {
-      throw new RuntimeException(e.getMessage(), e);
-    }
-
-    return schema;
-  }
-
-  private static Column parseColumn(JsonObject node) {
-    String name = node.has("name") ? node.get("name").getAsString() : null;
-
-    if (name == null) {
-      throw new IllegalArgumentException("Invalid schema, column name cannot be null");
-    }
-
-    String typeString = node.has("type") ? node.get("type").getAsString().toUpperCase() : null;
-
-    if (typeString == null) {
-      throw new IllegalArgumentException("Invalid schema, column type cannot be null");
-    }
-
-    TypeInfo typeInfo = TypeInfoParser.getTypeInfoFromTypeString(typeString);
-
-    return new Column(name, typeInfo, null, null, null);
+    // TODO
+    // resetOffset
+    LOGGER.info("Stop Thread({}) Total bytes sent: {}, elapsed time: {}",
+                Thread.currentThread().getId(),
+                totalBytesSentByClosedWriters, (System.currentTimeMillis()) - startTimestamp);
   }
 
   private void initOrRebuildOdps() {
     LOGGER.debug("Enter initOrRebuildOdps!");
+    // Exit fast
     if (odps == null) {
       this.odps = OdpsUtils.getOdps(config);
+      odpsCreateLastTime = System.currentTimeMillis();
     }
-
-    // Exit fast
     if (!Account.AccountProvider.STS.name().equals(accountType)) {
       return;
     }
-
     long current = System.currentTimeMillis();
     if (current - odpsCreateLastTime > timeout) {
       LOGGER.info("STS AK timed out. Last: {}, current: {}", odpsCreateLastTime, current);
       this.odps = OdpsUtils.getOdps(config);
-      LOGGER.info("Account refreshed. Creation time: {}", current);
-      for (Map.Entry<TopicPartition, MaxComputeSinkWriter> eachWriter : writers.entrySet()) {
-        eachWriter.getValue().refresh(odps);
-      }
-      LOGGER.info("Writers refreshed.");
       odpsCreateLastTime = current;
+      LOGGER.info("Account refreshed. Creation time: {}", current);
     }
+  }
+
+  /**
+   * @return MaxComputeSinkWriter
+   */
+  private MaxComputeSinkWriter createSinkWriter(List<SinkRecord> records,
+                                                SinkStatusContext sinkStatusContext) {
+    initOrRebuildOdps();
+    return new MaxComputeSinkWriter(this.odps, records, sinkStatusContext, config, project, table,
+                                    recordConverter,
+                                    useStreamTunnel, runtimeErrorWriter);
+  }
+
+  @Override
+  public String version() {
+    return VersionUtil.getVersion();
   }
 }

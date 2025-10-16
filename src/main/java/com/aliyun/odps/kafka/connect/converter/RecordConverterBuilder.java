@@ -20,7 +20,6 @@
 
 package com.aliyun.odps.kafka.connect.converter;
 
-
 import com.aliyun.odps.TableSchema;
 
 public class RecordConverterBuilder {
@@ -40,31 +39,32 @@ public class RecordConverterBuilder {
     VALUE
   }
 
-  public enum Format {
-    /**
-     * Format is binary
-     */
-    BINARY,
-    /**
-     * Format is text
-     */
-    TEXT,
-    /**
-     * Format is csv
-     */
-    CSV,
-    /**
-     * Format is json
-     */
-    JSON,
-    /**
-     * Format is flatten json
-     */
-    FLATTEN
-  }
+    private Format format = Format.TEXT;
 
   private Mode mode = Mode.DEFAULT;
-  private Format format = Format.TEXT;
+
+  public RecordConverter build() {
+    switch (format) {
+      case TEXT:
+        return new DefaultRecordConverter(mode);
+      case BINARY:
+        return new BinaryRecordConverter(mode);
+      case JSON:
+        return new JsonRecordConverter(mode);
+      case FLATTEN:
+        return new FlattenRecordConverter(mode, schema);
+      case CSV:
+        if (schema == null) {
+          throw new IllegalArgumentException(
+            "Unsupported combination, schema is null , format: " + format);
+        }
+        if (Mode.DEFAULT != mode) {
+          return new CsvRecordConverter(schema, mode);
+        }
+    }
+    throw new IllegalArgumentException(
+      "Unsupported combination, Converter type: " + mode + ", format: " + format);
+    }
   private TableSchema schema = null;
 
   public RecordConverterBuilder() {
@@ -85,23 +85,26 @@ public class RecordConverterBuilder {
     return this;
   }
 
-  public RecordConverter build() {
-    if (Format.TEXT.equals(format)) {
-      return new DefaultRecordConverter(mode);
-    } else if (Format.BINARY.equals(format)) {
-      return new BinaryRecordConverter(mode);
-    } else if (Format.CSV.equals(format) && !Mode.DEFAULT.equals(mode)) {
-      if (schema == null) {
-        throw new IllegalArgumentException("Required argument: schema");
-      }
-      return new CsvRecordConverter(schema, mode);
-    } else if (Format.JSON.equals(format)) {
-      return new JsonRecordConverter(mode);
-    } else if (Format.FLATTEN.equals(format)) {
-      return new FlattenRecordConverter(mode, schema);
-    } else {
-      throw new IllegalArgumentException(
-          "Unsupported combination, Converter type: " + mode + ", format: " + format);
+    public enum Format {
+      /**
+       * Format is binary
+       */
+      BINARY,
+      /**
+       * Format is text
+       */
+      TEXT,
+      /**
+       * Format is csv
+       */
+      CSV,
+      /**
+       * Format is json
+       */
+      JSON,
+      /**
+       * Format is flatten json
+       */
+      FLATTEN
     }
-  }
 }

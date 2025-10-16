@@ -22,7 +22,6 @@ package com.aliyun.odps.kafka.connect;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.lang.reflect.Field;
 import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -31,9 +30,6 @@ import java.util.Objects;
 import java.util.TimeZone;
 import java.util.concurrent.Callable;
 
-import com.aliyun.odps.kafka.connect.MaxComputeSinkConnectorConfig.BaseParameter;
-import com.aliyun.odps.tunnel.io.StreamRecordPackImpl;
-import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,19 +41,17 @@ import com.aliyun.odps.Table;
 import com.aliyun.odps.data.Record;
 import com.aliyun.odps.data.RecordWriter;
 import com.aliyun.odps.kafka.KafkaWriter;
+import com.aliyun.odps.kafka.connect.MaxComputeSinkConnectorConfig.BaseParameter;
 import com.aliyun.odps.kafka.connect.converter.RecordConverter;
-import com.aliyun.odps.kafka.connect.utils.OdpsUtils;
 import com.aliyun.odps.tunnel.TableTunnel;
 import com.aliyun.odps.tunnel.TableTunnel.UploadSession;
 import com.aliyun.odps.tunnel.TunnelException;
 import com.aliyun.odps.tunnel.io.CompressOption;
 import com.aliyun.odps.tunnel.io.TunnelBufferedWriter;
 
-
 public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
 
   private static final Logger LOGGER = LoggerFactory.getLogger(MaxComputeSinkWriter.class);
-
     private static final DateTimeFormatter DATETIME_FORMATTER = DateTimeFormatter.ofPattern("MM-dd-yyyy HH:mm:ss");
     private static final DateTimeFormatter DAY_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd");
     private static final DateTimeFormatter HOUR_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH");
@@ -65,6 +59,7 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
 
   private static final int DEFAULT_RETRY_TIMES = 3;
   private static final int DEFAULT_RETRY_INTERVAL_SECONDS = 10;
+  private final List<SinkRecord> recordBuffer;
 
   /*
     Internal states of this sink writer, could change
@@ -78,10 +73,9 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
   private RecordWriter writer;
   private Record reusedRecord;
   private Long partitionStartTimestamp;
-  private List<SinkRecord> recordBuffer;
-  private TopicPartition partition;
-  private KafkaWriter errorReporter;
-  private long processedRecordsEachEcho = 0;
+  private final KafkaWriter errorReporter;
+  private final PartitionWindowType partitionWindowType;
+  private final TimeZone tz;
   /*
     Configs of this sink writer, won't change
    */
@@ -90,63 +84,128 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
   private String project;
   private String tunnelEndpoint; // tunnel endpoint
   private String table;
-  private int bufferSize;
+  private final boolean useStreamingTunnel;
   private RecordConverter converter;
-  private PartitionWindowType partitionWindowType;
+  private final SinkStatusContext sinkStatusContext;
   private final boolean useNewPartitionFormat;
-  private TimeZone tz;
+  private final boolean skipError;
   private int retryTimes;
-  private boolean useStreamingTunnel = false;
-  private SinkStatusContext sinkStatusContext;
-  private boolean skipError = false;
+  private final long recordSize;
+  private int processedRecordsEachEcho = 0;
+  private final int bufferSizeKB;
 
   /*
     Performance metrics
    */
   private long totalBytesByClosedSessions = 0;
 
-  private int getActualBufferBytes() {
-    return bufferSize * 1024;
-  }
-
-  private TableTunnel.StreamRecordPack recreateRecordPack() throws IOException, TunnelException {
-    return streamSession.newRecordPack(
-        new CompressOption(CompressOption.CompressAlgorithm.ODPS_ZLIB, 1, 0));
-  }
-
-  public MaxComputeSinkWriter(
-      MaxComputeSinkConnectorConfig config,
-      String project,
-      String table,
-      RecordConverter converter,
-      int bufferSize,
-      PartitionWindowType partitionWindowType,
-      TimeZone tz,
-      boolean useStreamingTunnel,
-      int retryTimes,
-      String tunnelEndpoint) {
-    this.odps = OdpsUtils.getOdps(config);
-    this.odps.setUserAgent("aliyun-maxc-kafka-connector");
+  public MaxComputeSinkWriter(Odps odps, List<SinkRecord> records,
+                              SinkStatusContext sinkStatusContext,
+                              MaxComputeSinkConnectorConfig config,
+                              String project, String table, RecordConverter converter,
+                              boolean useStreamingTunnel,
+                              KafkaWriter errorReporter) {
+    this.recordSize = records.size();
+    this.recordBuffer = records;
+    this.sinkStatusContext = sinkStatusContext;
+    this.odps = odps;
     this.tunnel = new TableTunnel(this.odps);
     this.project = Objects.requireNonNull(project);
-    this.tunnelEndpoint = Objects.requireNonNull(tunnelEndpoint); // add tunnel endpoint config
+    this.tunnelEndpoint = Objects.requireNonNull(
+      config.getString(BaseParameter.TUNNEL_ENDPOINT.getName())); // add tunnel endpoint config
     if (!Objects.equals(this.tunnelEndpoint, "")) {
       this.tunnel.setEndpoint(tunnelEndpoint);
     }
     this.table = Objects.requireNonNull(table);
     this.converter = Objects.requireNonNull(converter);
-    this.bufferSize = bufferSize;
-    this.partitionWindowType = partitionWindowType;
-    this.useNewPartitionFormat = config.getBoolean(BaseParameter.USE_NEW_PARTITION_FORMAT.getName());
-    this.tz = Objects.requireNonNull(tz);
+    this.bufferSizeKB = config.getInt(BaseParameter.BUFFER_SIZE_KB.getName());
+    this.partitionWindowType = PartitionWindowType.valueOf(
+      config.getString(BaseParameter.PARTITION_WINDOW_TYPE.getName()));
+
+    this.useNewPartitionFormat =
+      config.getBoolean(BaseParameter.USE_NEW_PARTITION_FORMAT.getName());
+    this.tz =
+      Objects.requireNonNull(
+        TimeZone.getTimeZone(config.getString(BaseParameter.TIME_ZONE.getName())));
     this.useStreamingTunnel = useStreamingTunnel;
-    this.retryTimes = retryTimes;
+    this.retryTimes = config.getInt(BaseParameter.FAIL_RETRY_TIMES.getName());
+
     if (this.retryTimes < 0) {
       this.retryTimes = DEFAULT_RETRY_TIMES;
     }
+
+    this.skipError = config.getBoolean(BaseParameter.SKIP_ERROR.getName());
+    this.errorReporter = errorReporter;
   }
 
-  public void write(SinkRecord sinkRecord, Long timestamp) throws IOException {
+  private static synchronized void createPartition(Odps odps, String project, String table,
+                                                   PartitionSpec partitionSpec)
+    throws OdpsException {
+    Table t = odps.tables().get(project, table);
+    // Check the existence of the partition before executing a DML. Could save a lot of time.
+    if (!t.hasPartition(partitionSpec)) {
+      // Add if not exists to avoid conflicts
+      t.createPartition(partitionSpec, true);
+    }
+  }
+
+  @Override
+  public Boolean call() throws RuntimeException {
+    long time = System.currentTimeMillis() / 1000;
+    long start = -1;
+    long end = -1;
+    processedRecordsEachEcho = 0;
+    boolean ok = true;
+    // TODO split batch tunnel and streaming tunnel
+    try {
+      for (SinkRecord record : recordBuffer) {
+
+        write(record, time);
+        if (start == -1) {
+          start = record.kafkaOffset();
+        }
+        end = Math.max(end, record.kafkaOffset());
+        processedRecordsEachEcho++;
+      }
+    } catch (IOException e) {
+      // tunnel 的波动引起 , 会不断重试
+      LOGGER.warn("something error in tunnel write,Please check tunnel environment! {}",
+                  e.getMessage());
+      ok = false;
+    } catch (Throwable e) {
+      // 数据内部错误，且用户选择不跳过,直接抛给上层框架
+      LOGGER.error("something error in MaxComputerSinkWriter ", e);
+      throw new RuntimeException(e);
+    }
+    try {
+      flush();
+      close();
+      LOGGER.info("Flush {} records, from {} to {}", recordSize, start, end);
+      if (start != -1) {
+        sinkStatusContext.addOffsetRange(start, end);
+        sinkStatusContext.addTotalBytesSentByWriter(getTotalBytes());
+        sinkStatusContext.addProcessedRecords(processedRecordsEachEcho);
+      }
+    } catch (IOException e) {
+      LOGGER.warn("something error in tunnel close,Please check tunnel environment! {}",
+                  e.getMessage());
+      ok = false;
+    }
+    return ok;
+  }
+
+  private void writeToBatchWriter() throws IOException {
+    writer.write(reusedRecord);
+  }
+
+  private void writeToStreamWriter() throws IOException {
+    streamPack.append(reusedRecord);
+    if (streamPack.getDataSize() >= getActualBufferBytes()) {
+      flushStreamPackWithRetry(retryTimes);
+    }
+  }
+
+  private void write(SinkRecord sinkRecord, Long timestamp) throws IOException {
     if (minOffset == null) {
       minOffset = sinkRecord.kafkaOffset();
     }
@@ -177,15 +236,8 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
     }
   }
 
-  private void writeToBatchWriter() throws IOException {
-    writer.write(reusedRecord);
-  }
-
-  private void writeToStreamWriter() throws IOException {
-    streamPack.append(reusedRecord);
-    if (streamPack.getDataSize() >= getActualBufferBytes()) {
-      flushStreamPackWithRetry(retryTimes);
-    }
+  private int getActualBufferBytes() {
+    return bufferSizeKB * 1024;
   }
 
   /**
@@ -193,61 +245,6 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
    */
   public Long getMinOffset() {
     return minOffset;
-  }
-
-  /**
-   * Refresh the STS access key ID & secret.
-   *
-   * @param odps odps
-   */
-  public void refresh(Odps odps) {
-    LOGGER.info("Enter refresh.");
-    this.odps = odps;
-    this.tunnel = new TableTunnel(odps);
-    if (!Objects.equals(this.tunnelEndpoint, "")) {
-      this.tunnel.setEndpoint(this.tunnelEndpoint);
-    }
-
-    // Upload session may not exist
-    if (session != null) {
-      String sessionId = session.getId();
-      try {
-        this.session = tunnel.getUploadSession(project, table, partitionSpec, sessionId);
-      } catch (Exception e) {
-        LOGGER.error("Set session failed!!!", e);
-        throw new RuntimeException(e);
-      }
-    }
-    if (streamSession != null) {
-      try {
-        // old version: streamSession = tunnel.createStreamUploadSession(project, table, partitionSpec, true);
-        // new version: below
-        streamSession =
-            tunnel.buildStreamUploadSession(project, table)
-                .setPartitionSpec(partitionSpec)
-                .setCreatePartition(true)
-                .build();
-        if (streamPack != null) {
-          try {
-            StreamRecordPackImpl packImpl = (StreamRecordPackImpl) streamPack;
-            Field sessionField = StreamRecordPackImpl.class.getDeclaredField("session");
-            sessionField.setAccessible(true); // 破除 private 限制
-            sessionField.set(packImpl, streamSession);
-          } catch (Exception e) {
-            LOGGER.error("Refresh sts token failed: cannot recreate stream pack", e);
-            throw new RuntimeException(e);
-          }
-        }
-        flushStreamPackWithRetry(retryTimes);
-        streamPack = recreateRecordPack();
-      } catch (TunnelException e) {
-        LOGGER.error("Refresh sts token failed: cannot recreate stream session", e);
-        throw new RuntimeException(e);
-      } catch (IOException e) {
-        LOGGER.error("Refresh sts token failed: cannot recreate stream pack", e);
-        throw new RuntimeException(e);
-      }
-    }
   }
 
   /**
@@ -263,15 +260,9 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
     closeCurrentSessionWithRetry(retryTimes);
   }
 
-  public void flush() {
-    if (streamSession != null && streamPack != null) {
-      try {
-        flushStreamPackWithRetry(retryTimes);
-      } catch (IOException e) {
-        LOGGER.error("Failed to flush stream pack", e);
-        throw new RuntimeException(e);
-      }
-    }
+  private TableTunnel.StreamRecordPack recreateRecordPack() throws IOException, TunnelException {
+    return streamSession.newRecordPack(
+      new CompressOption(CompressOption.CompressAlgorithm.ODPS_ZLIB, 1, 0));
   }
 
   public long getTotalBytes() {
@@ -286,6 +277,30 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
     return totalBytesByClosedSessions;
   }
 
+  private void flush() {
+    if (streamSession != null && streamPack != null) {
+      try {
+        flushStreamPackWithRetry(retryTimes);
+      } catch (IOException e) {
+        LOGGER.error("Failed to flush stream pack", e);
+        throw new RuntimeException(e);
+      }
+    }
+  }
+
+  private void closeCurrentStreamSessionWithRetry(int retryLimit) throws IOException {
+    // stream session does not require closing, but we should check for remaining records.
+    flushStreamPackWithRetry(retryLimit);
+  }
+
+  private void closeCurrentSessionWithRetry(int retryLimit) throws IOException {
+    if (useStreamingTunnel) {
+      closeCurrentStreamSessionWithRetry(retryLimit);
+    } else {
+      closeCurrentNormalSessionWithRetry(retryLimit);
+    }
+  }
+
   private void flushStreamPackWithRetry(int retryLimit) throws IOException {
     if (streamPack == null) {
       // init condition
@@ -298,8 +313,8 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
         break;
       } catch (IOException ex) {
         LOGGER.warn(
-            "Failed to flush streaming pack, retrying after " + DEFAULT_RETRY_INTERVAL_SECONDS
-            + "s", ex);
+          "Failed to flush streaming pack, retrying after " + DEFAULT_RETRY_INTERVAL_SECONDS + "s",
+          ex);
         try {
           Thread.sleep(DEFAULT_RETRY_INTERVAL_SECONDS * 1000);
         } catch (InterruptedException e) {
@@ -320,35 +335,22 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
     minOffset = null; // flush good
   }
 
-  private void closeCurrentStreamSessionWithRetry(int retryLimit) throws IOException {
-    // stream session does not require closing, but we should check for remaining records.
-    flushStreamPackWithRetry(retryLimit);
-  }
-
-  private void closeCurrentSessionWithRetry(int retryLimit) throws IOException {
-    if (useStreamingTunnel) {
-      closeCurrentStreamSessionWithRetry(retryLimit);
-    } else {
-      closeCurrentNormalSessionWithRetry(retryLimit);
-    }
-  }
-
   private void closeCurrentNormalSessionWithRetry(int retryLimit) throws IOException {
-    String threadName = String.valueOf(Thread.currentThread().getId());
-    LOGGER.debug("Thread({}) Enter closeCurrentSessionWithRetry!", threadName);
+    String threadId = String.valueOf(Thread.currentThread().getId());
+    LOGGER.debug("Thread({}) Enter closeCurrentSessionWithRetry!", threadId);
     if (session == null) {
       return;
     }
 
     totalBytesByClosedSessions += ((TunnelBufferedWriter) writer).getTotalBytes();
     writer.close();
-    LOGGER.debug("Thread({}) writer.close() successfully!", threadName);
+    LOGGER.debug("Thread({}) writer.close() successfully!", threadId);
 
     while (true) {
       try {
         session.commit();
-        LOGGER.debug("Thread({}) session.commit() successfully!", threadName);
-        minOffset = null;
+        LOGGER.info("Thread({}) session {} commit successfully!", threadId, session.getId());
+        minOffset = null; // flush good
         break;
       } catch (TunnelException e) {
         // TODO: random backoff
@@ -366,12 +368,14 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
         }
       }
     }
+
   }
 
   private void resetStreamUploadSessionIfNeeded(Long timestamp) throws OdpsException, IOException {
     if (needToResetUploadSession(timestamp)) {
       LOGGER.info("Reset stream upload session, last timestamp: {}, current: {}",
-                  partitionStartTimestamp, timestamp);
+                  partitionStartTimestamp,
+                  timestamp);
       // try flushing the pack
       flushStreamPackWithRetry(retryTimes);
 
@@ -381,12 +385,20 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
       resetPartitionStartTimestamp(timestamp);
 
       streamSession =
-          tunnel.buildStreamUploadSession(project, table)
-              .setPartitionSpec(partitionSpec)
-              .setCreatePartition(true)
-              .build();
+        tunnel.buildStreamUploadSession(project, table).setPartitionSpec(partitionSpec)
+          .setCreatePartition(true).build();
+      LOGGER.info("Thread({}) create streaming session {} successfully!",
+                  Thread.currentThread().getId(), streamSession.getId());
       streamPack = recreateRecordPack();
       reusedRecord = streamSession.newRecord();
+    }
+  }
+
+  private void resetUploadSessionIfNeeded(Long timestamp) throws OdpsException, IOException {
+    if (useStreamingTunnel) {
+      resetStreamUploadSessionIfNeeded(timestamp);
+    } else {
+      resetNormalUploadSessionIfNeeded(timestamp);
     }
   }
 
@@ -407,56 +419,12 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
       }
 
       session = tunnel.createUploadSession(project, table, partitionSpec);
+      LOGGER.info("Thread({}) create batch session {} successfully!",
+                  Thread.currentThread().getId(), session.getId());
       writer = session.openBufferedWriter(true);
       reusedRecord = session.newRecord();
       ((TunnelBufferedWriter) writer).setBufferSize(getActualBufferBytes());
     }
-  }
-
-  private void resetUploadSessionIfNeeded(Long timestamp) throws OdpsException, IOException {
-    if (useStreamingTunnel) {
-      resetStreamUploadSessionIfNeeded(timestamp);
-    } else {
-      resetNormalUploadSessionIfNeeded(timestamp);
-    }
-  }
-
-  private PartitionSpec getPartitionSpec(Long timestamp) {
-    PartitionSpec partitionSpec = new PartitionSpec();
-    ZonedDateTime dt = Instant.ofEpochSecond(timestamp).atZone(tz.toZoneId());
-
-      if (useNewPartitionFormat) {
-          switch (partitionWindowType) {
-              case DAY:
-                  partitionSpec.set(RecordConverter.PT, dt.format(DAY_FORMATTER));
-                  break;
-              case HOUR:
-                  partitionSpec.set(RecordConverter.PT, dt.format(HOUR_FORMATTER));
-                  break;
-              case MINUTE:
-                  partitionSpec.set(RecordConverter.PT, dt.format(MINUTE_FORMATTER));
-                  break;
-              default:
-                  throw new RuntimeException("Unsupported partition window type");
-          }
-      } else {
-          String datetimeString = dt.format(DATETIME_FORMATTER);
-          switch (partitionWindowType) {
-              case DAY:
-                  partitionSpec.set(RecordConverter.PT, datetimeString.substring(0, 10));
-                  break;
-              case HOUR:
-                  partitionSpec.set(RecordConverter.PT, datetimeString.substring(0, 13));
-                  break;
-              case MINUTE:
-                  partitionSpec.set(RecordConverter.PT, datetimeString.substring(0, 16));
-                  break;
-              default:
-                  throw new RuntimeException("Unsupported partition window type");
-          }
-      }
-
-    return partitionSpec;
   }
 
   private boolean needToResetUploadSession(Long timestamp) {
@@ -488,6 +456,44 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
     return needResetPartition;
   }
 
+  private PartitionSpec getPartitionSpec(Long timestamp) {
+    PartitionSpec partitionSpec = new PartitionSpec();
+    ZonedDateTime dt = Instant.ofEpochSecond(timestamp).atZone(tz.toZoneId());
+
+    if (useNewPartitionFormat) {
+      switch (partitionWindowType) {
+        case DAY:
+          partitionSpec.set(RecordConverter.PT, dt.format(DAY_FORMATTER));
+          break;
+        case HOUR:
+          partitionSpec.set(RecordConverter.PT, dt.format(HOUR_FORMATTER));
+          break;
+        case MINUTE:
+          partitionSpec.set(RecordConverter.PT, dt.format(MINUTE_FORMATTER));
+          break;
+        default:
+          throw new RuntimeException("Unsupported partition window type");
+      }
+    } else {
+      String datetimeString = dt.format(DATETIME_FORMATTER);
+      switch (partitionWindowType) {
+        case DAY:
+          partitionSpec.set(RecordConverter.PT, datetimeString.substring(0, 10));
+          break;
+        case HOUR:
+          partitionSpec.set(RecordConverter.PT, datetimeString.substring(0, 13));
+          break;
+        case MINUTE:
+          partitionSpec.set(RecordConverter.PT, datetimeString.substring(0, 16));
+          break;
+        default:
+          throw new RuntimeException("Unsupported partition window type");
+      }
+    }
+
+    return partitionSpec;
+  }
+
   private void resetPartitionStartTimestamp(Long timestamp) {
     if (partitionStartTimestamp == null) {
       ZonedDateTime dt = Instant.ofEpochSecond(timestamp).atZone(tz.toZoneId());
@@ -495,18 +501,18 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
       switch (partitionWindowType) {
         case DAY:
           partitionStartDatetime =
-              ZonedDateTime.of(dt.getYear(), dt.getMonthValue(), dt.getDayOfMonth(),
-                               0, 0, 0, 0, tz.toZoneId());
+            ZonedDateTime.of(dt.getYear(), dt.getMonthValue(), dt.getDayOfMonth(), 0,
+                             0, 0, 0, tz.toZoneId());
           break;
         case HOUR:
           partitionStartDatetime =
-              ZonedDateTime.of(dt.getYear(), dt.getMonthValue(), dt.getDayOfMonth(),
-                               dt.getHour(), 0, 0, 0, tz.toZoneId());
+            ZonedDateTime.of(dt.getYear(), dt.getMonthValue(), dt.getDayOfMonth(),
+                             dt.getHour(), 0, 0, 0, tz.toZoneId());
           break;
         case MINUTE:
           partitionStartDatetime =
-              ZonedDateTime.of(dt.getYear(), dt.getMonthValue(), dt.getDayOfMonth(),
-                               dt.getHour(), dt.getMinute(), 0, 0, tz.toZoneId());
+            ZonedDateTime.of(dt.getYear(), dt.getMonthValue(), dt.getDayOfMonth(),
+                             dt.getHour(), dt.getMinute(), 0, 0, tz.toZoneId());
           break;
         default:
           throw new RuntimeException("Unsupported partition window type");
@@ -514,85 +520,5 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
 
       partitionStartTimestamp = partitionStartDatetime.toEpochSecond();
     }
-  }
-
-  private static synchronized void createPartition(
-      Odps odps,
-      String project,
-      String table,
-      PartitionSpec partitionSpec)
-      throws OdpsException {
-    Table t = odps.tables().get(project, table);
-    // Check the existence of the partition before executing a DML. Could save a lot of time.
-    if (!t.hasPartition(partitionSpec)) {
-      // Add if not exists to avoid conflicts
-      t.createPartition(partitionSpec, true);
-    }
-  }
-
-  public void reset() {
-    this.session = null;
-    this.writer = null;
-    this.partition = null;
-    this.processedRecordsEachEcho = 0;
-  }
-
-  public void setSinkStatusContext(SinkStatusContext context) {
-    sinkStatusContext = context;
-  }
-
-  public void setSkipError(boolean skip) {
-    skipError = skip;
-  }
-
-  public void setRecordBuffer(List<SinkRecord> records) {
-    this.recordBuffer = records;
-  }
-
-
-  public void setErrorReporter(KafkaWriter errorReporter) {
-    this.errorReporter = errorReporter;
-  }
-
-
-  @Override
-  public Boolean call() throws RuntimeException {
-    long time = System.currentTimeMillis() / 1000;
-    long start = -1;
-    long end = -1;
-    processedRecordsEachEcho = 0;
-    boolean ok = true;
-    try {
-      for (SinkRecord record : recordBuffer) {
-        write(record, time);
-        if (start == -1) {
-          start = record.kafkaOffset();
-        }
-        end = Math.max(end, record.kafkaOffset());
-        processedRecordsEachEcho++;
-      }
-    } catch (IOException e) {
-      // tunnel 的波动引起 , 会不断重试
-      LOGGER.warn("something error in tunnel write,Please check tunnel environment! {}",
-                  e.getMessage());
-      ok = false;
-    } catch (RuntimeException e) {
-      // 数据内部错误，且用户选择不跳过,直接抛给上层框架
-      LOGGER.error("something error in MaxComputerSinkWriter : " + e.getMessage());
-      throw new RuntimeException(e);
-    }
-    try {
-      flush();
-      close();
-      if (start != -1) {
-        sinkStatusContext.addOffsetInterval(start, end);
-        sinkStatusContext.addTotalBytesSentByWriter(getTotalBytes());
-      }
-    } catch (IOException e) {
-      LOGGER.warn("something error in tunnel close,Please check tunnel environment! {}",
-                  e.getMessage());
-      ok = false;
-    }
-    return ok;
   }
 }

@@ -5,32 +5,32 @@
 {
     "name": "your_name",
     "config": {
-        "connector.class": "com.aliyun.odps.kafka.connect.MaxComputeSinkConnector",
-        "tasks.max": "3",
-        "topics": "your_topic",
-        "endpoint": "endpoint",
-        "tunnel_endpoint": "your_tunnel endpoint",
-        "project": "project",
-        "table": "your_table",
-        "account_type": "account type (STS or ALIYUN)",
-        "access_id": "access id",
-        "access_key": "access key",
-        "account_id": "account id for sts",
-        "sts.endpoint": "sts endpoint",
-        "region_id": "region id for sts",
-        "role_name": "role name for sts",
-        "client_timeout_ms": "STS Token valid period (ms)",
-        "format": "TEXT",
-        "mode": "KEY",
-        "partition_window_type": "MINUTE",
-        "use_new_partition_format":true,
-        "use_streaming": false,
-        "buffer_size_kb": 65536
-        "sink_pool_size":"16",
-        "record_batch_size":"8000",
-        "runtime.error.topic.name":"kafka topic when runtime errors happens",
-        "runtime.error.topic.bootstrap.servers":"kafka bootstrap servers of error topic queue",
-        "skip_error":"false"
+	"connector.class": "com.aliyun.odps.kafka.connect.MaxComputeSinkConnector",
+	"tasks.max": "3",
+	"topics": "your_topic",
+	"endpoint": "endpoint",
+	"tunnel_endpoint": "your_tunnel endpoint",
+	"project": "project",
+	"table": "your_table",
+	"account_type": "account type (STS or ALIYUN)",
+	"access_id": "access id",
+	"access_key": "access key",
+	"account_id": "account id for sts",
+	"sts.endpoint": "sts endpoint",
+	"region_id": "region id for sts",
+	"role_name": "role name for sts",
+	"client_timeout_ms": "STS Token valid period (ms)",
+	"format": "TEXT",
+	"mode": "KEY",
+	"partition_window_type": "MINUTE",
+	"use_new_partition_format":true,
+	"use_streaming": false,
+	"buffer_size_kb": 65536
+	"sink_pool_size":"16",
+	"record_batch_size":"8000",
+	"runtime.error.topic.name":"kafka topic when runtime errors happens",
+	"runtime.error.topic.bootstrap.servers":"kafka bootstrap servers of error topic queue",
+	"skip_error":"false"
     }
 }
 ````
@@ -59,6 +59,3 @@
 - runtime.error.topic.name: 当connect内部写入某条数据发生未知错误时, 将错误记录写入Kafka消息队列中.默认为空
 - runtime.error.topic.bootstrap.servers: 与runtime.error.topic.name搭配使用, 错误消息写入Kafka的bootstrap servers地址
 - skip_error: 是否跳过发生未知写入错误的记录, 默认false不会跳过; 如果设置为true且未配置runtime.error.topic.name,则会丢弃错误记录的写入.
-
-## 其他
-由于许可证冲突，我们移除了依赖的 stax 和 jersey-hk2，如果需要使用，请自行添加

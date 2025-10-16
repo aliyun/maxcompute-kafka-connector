@@ -5,7 +5,7 @@
 
     <groupId>com.aliyun.odps</groupId>
     <artifactId>kafka-connector</artifactId>
-    <version>2.0.1</version>
+    <version>2.1.0</version>
     <packaging>jar</packaging>
 
     <name>kafka-connector</name>
@@ -47,13 +47,19 @@
             <scope>provided</scope>
         </dependency>
         <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>com.aliyun.odps</groupId>
             <artifactId>odps-sdk-core</artifactId>
             <version>${odps.sdk.version}</version>
             <exclusions>
                 <exclusion>
-                    <groupId>stax</groupId>
-                    <artifactId>stax</artifactId>
+                    <artifactId>jackson-databind</artifactId>
+                    <groupId>com.fasterxml.jackson.core</groupId>
                 </exclusion>
             </exclusions>
         </dependency>
@@ -82,12 +88,20 @@
             <groupId>org.apache.kafka</groupId>
             <artifactId>connect-runtime</artifactId>
             <version>${kafka.version}</version>
-            <exclusions>
-                <exclusion>
-                    <artifactId>jersey-hk2</artifactId>
-                    <groupId>org.glassfish.jersey.inject</groupId>
-                </exclusion>
-            </exclusions>
+            <classifier>test</classifier>
+            <type>test-jar</type>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>connect-runtime</artifactId>
+            <version>${kafka.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>kafka-clients</artifactId>
+            <version>${kafka.version}</version>
+            <classifier>test</classifier>
+            <type>test-jar</type>
         </dependency>
         <dependency>
             <groupId>org.apache.kafka</groupId>
@@ -95,9 +109,22 @@
             <version>${kafka.version}</version>
         </dependency>
         <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>kafka_2.13</artifactId>
+            <type>test-jar</type>
+            <classifier>test</classifier>
+            <version>${kafka.version}</version>
+        </dependency>
+        <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-core</artifactId>
             <version>2.14.2</version>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <version>5.9.2</version>
+            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>io.confluent</groupId>
