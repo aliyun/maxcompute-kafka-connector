@@ -110,7 +110,7 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
     this.recordBuffer = records;
     this.sinkStatusContext = sinkStatusContext;
     this.odps = odps;
-    this.tunnel = OdpsUtils.getTableTunnel(config);
+    this.tunnel = OdpsUtils.getTableTunnel(odps, config);
     this.project = Objects.requireNonNull(project);
     this.table = Objects.requireNonNull(table);
     this.converter = Objects.requireNonNull(converter);

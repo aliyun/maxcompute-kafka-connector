@@ -89,8 +89,7 @@ public class OdpsUtils {
     }
   }
 
-  public static TableTunnel getTableTunnel(MaxComputeSinkConnectorConfig config) {
-    Odps odps = getOdps(config);
+  public static TableTunnel getTableTunnel(Odps odps, MaxComputeSinkConnectorConfig config) {
     com.aliyun.odps.tunnel.Configuration configuration = com.aliyun.odps.tunnel.Configuration.builder(odps)
       .withRetryLogger(new RetryLogger())
       .withCompressOptions(new CompressOption())
