@@ -101,7 +101,7 @@ public class MaxComputeSinkTask extends SinkTask {
     int poolSize = config.getInt(BaseParameter.POOL_SIZE.getName());
     executor = Executors.newFixedThreadPool(poolSize); // multi-thread to run record sink to MC
     // Init odps
-    initOrRebuildOdps();
+    this.odps = OdpsUtils.getOdps(config);
     // Init converter builder
     RecordConverterBuilder.Format format = RecordConverterBuilder.Format.valueOf(
       config.getString(BaseParameter.FORMAT.getName()));
@@ -224,7 +224,6 @@ public class MaxComputeSinkTask extends SinkTask {
                      entry.getKey().topic(), entry.getKey().partition());
       }
     }
-    initOrRebuildOdps();
     // should be flush by offsets
     for (TopicPartition partition : offsets.keySet()) {
       //Entry<TopicPartition, SinkStatusContext> item : sinkStatus.entrySet()
@@ -299,37 +298,11 @@ public class MaxComputeSinkTask extends SinkTask {
                 totalBytesSentByClosedWriters, (System.currentTimeMillis()) - startTimestamp);
   }
 
-  // TODO: remove this
-  private void initOrRebuildOdps() {
-    LOGGER.debug("Enter initOrRebuildOdps!");
-    // Exit fast
-    if (odps == null) {
-      this.odps = OdpsUtils.getOdps(config);
-      odpsCreateLastTime = System.currentTimeMillis();
-    }
-    if (!Account.AccountProvider.STS.name().equals(accountType)) {
-      return;
-    }
-    try {
-      long current = System.currentTimeMillis();
-      if (current - odpsCreateLastTime > timeout) {
-        LOGGER.info("STS AK timed out. Last: {}, current: {}", odpsCreateLastTime, current);
-        this.odps = OdpsUtils.getOdps(config);
-        odpsCreateLastTime = current;
-        LOGGER.info("Account refreshed. Creation time: {}", current);
-      }
-    } catch (Exception e) {
-      LOGGER.error("Refresh account error: {}", e.getMessage(), e);
-      throw new ConnectException(e.getMessage(), e);
-    }
-  }
-
   /**
    * @return MaxComputeSinkWriter
    */
   private MaxComputeSinkWriter createSinkWriter(List<SinkRecord> records,
                                                 SinkStatusContext sinkStatusContext) {
-    initOrRebuildOdps();
     return new MaxComputeSinkWriter(this.odps, records, sinkStatusContext, config, project, table,
                                     recordConverter,
                                     useStreamTunnel, runtimeErrorWriter);

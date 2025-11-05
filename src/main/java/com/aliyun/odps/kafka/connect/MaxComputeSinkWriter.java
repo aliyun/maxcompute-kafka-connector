@@ -43,6 +43,7 @@ import com.aliyun.odps.data.RecordWriter;
 import com.aliyun.odps.kafka.KafkaWriter;
 import com.aliyun.odps.kafka.connect.MaxComputeSinkConnectorConfig.BaseParameter;
 import com.aliyun.odps.kafka.connect.converter.RecordConverter;
+import com.aliyun.odps.kafka.connect.utils.OdpsUtils;
 import com.aliyun.odps.tunnel.TableTunnel;
 import com.aliyun.odps.tunnel.TableTunnel.UploadSession;
 import com.aliyun.odps.tunnel.TunnelException;
@@ -109,13 +110,8 @@ public class MaxComputeSinkWriter implements Closeable, Callable<Boolean> {
     this.recordBuffer = records;
     this.sinkStatusContext = sinkStatusContext;
     this.odps = odps;
-    this.tunnel = new TableTunnel(this.odps);
+    this.tunnel = OdpsUtils.getTableTunnel(config);
     this.project = Objects.requireNonNull(project);
-    this.tunnelEndpoint = Objects.requireNonNull(
-      config.getString(BaseParameter.TUNNEL_ENDPOINT.getName())); // add tunnel endpoint config
-    if (!Objects.equals(this.tunnelEndpoint, "")) {
-      this.tunnel.setEndpoint(tunnelEndpoint);
-    }
     this.table = Objects.requireNonNull(table);
     this.converter = Objects.requireNonNull(converter);
     this.bufferSizeKB = config.getInt(BaseParameter.BUFFER_SIZE_KB.getName());

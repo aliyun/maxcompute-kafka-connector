@@ -6,12 +6,12 @@ import com.aliyun.credentials.provider.AlibabaCloudCredentialsProvider;
 import com.aliyun.odps.Odps;
 import com.aliyun.odps.account.Account;
 import com.aliyun.odps.account.AklessAccount;
+import com.aliyun.odps.account.AliyunAccount;
 import com.aliyun.odps.kafka.connect.MaxComputeSinkConnectorConfig;
-import com.aliyun.odps.kafka.connect.account.AccountFactory;
-import com.aliyun.odps.kafka.connect.account.AccountGenerator;
-import com.aliyun.odps.kafka.connect.account.IAccountFactory;
-import com.aliyun.odps.kafka.connect.account.impl.AliyunAccountGenerator;
-import com.aliyun.odps.kafka.connect.account.impl.STSAccountGenerator;
+import com.aliyun.odps.kafka.connect.account.StsCredentialsProvider;
+import com.aliyun.odps.rest.RestClient;
+import com.aliyun.odps.tunnel.TableTunnel;
+import com.aliyun.odps.tunnel.io.CompressOption;
 import com.aliyun.odps.utils.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,8 +19,6 @@ import org.slf4j.LoggerFactory;
 import java.lang.reflect.Field;
 
 public class OdpsUtils {
-
-  private static final IAccountFactory<AccountGenerator<?>> accountFactory = new AccountFactory<>();
 
   private static final Logger LOGGER = LoggerFactory.getLogger(OdpsUtils.class);
 
@@ -30,9 +28,13 @@ public class OdpsUtils {
         config.getString(MaxComputeSinkConnectorConfig.BaseParameter.ACCOUNT_TYPE.getName());
     Account account;
     if (accountType.equalsIgnoreCase(Account.AccountProvider.STS.toString())) {
-      account = accountFactory.getGenerator(STSAccountGenerator.class).generate(config);
+      account = new AklessAccount(new StsCredentialsProvider(config));
     } else if (accountType.equalsIgnoreCase(Account.AccountProvider.ALIYUN.toString())) {
-      account = accountFactory.getGenerator(AliyunAccountGenerator.class).generate(config);
+      String accessId =
+        config.getString(MaxComputeSinkConnectorConfig.BaseParameter.ACCESS_ID.getName());
+      String accessKey =
+        config.getString(MaxComputeSinkConnectorConfig.BaseParameter.ACCESS_KEY.getName());
+      account = new AliyunAccount(accessId, accessKey);
     } else {
       LOGGER.info("use akless account to get credencial.");
       Config credencialConfig = Config.build(config.getConfigMap());
@@ -70,5 +72,35 @@ public class OdpsUtils {
     odps.getRestClient().setReadTimeout(20);
 
     return odps;
+  }
+
+  public static class RetryLogger extends RestClient.RetryLogger {
+
+    private static final Logger LOG = LoggerFactory.getLogger(RetryLogger.class);
+
+    @Override
+    public void onRetryLog(Throwable e, long retryCount, long retrySleepTime) {
+      // Log the exception and retry details
+      LOG.warn(
+        "Retry attempt #" + retryCount + " failed. " +
+        "Exception: " + e.getMessage() + ". " +
+        "Sleeping for " + retrySleepTime + "ms before next attempt."
+      );
+    }
+  }
+
+  public static TableTunnel getTableTunnel(MaxComputeSinkConnectorConfig config) {
+    Odps odps = getOdps(config);
+    com.aliyun.odps.tunnel.Configuration configuration = com.aliyun.odps.tunnel.Configuration.builder(odps)
+      .withRetryLogger(new RetryLogger())
+      .withCompressOptions(new CompressOption())
+      .build();
+    TableTunnel tunnel = new TableTunnel(odps, configuration);
+    if (!StringUtils.isNullOrEmpty(config.getString(
+      MaxComputeSinkConnectorConfig.BaseParameter.TUNNEL_ENDPOINT.getName()))) {
+      tunnel.setEndpoint(config.getString(
+        MaxComputeSinkConnectorConfig.BaseParameter.TUNNEL_ENDPOINT.getName()));
+    }
+    return tunnel;
   }
 }
