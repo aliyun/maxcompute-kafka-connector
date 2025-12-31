@@ -11,6 +11,7 @@
 	"endpoint": "endpoint",
 	"tunnel_endpoint": "your_tunnel endpoint",
 	"project": "project",
+	"schema":"",
 	"table": "your_table",
 	"account_type": "account type (STS or ALIYUN)",
 	"access_id": "access id",
@@ -25,7 +26,6 @@
 	"partition_window_type": "MINUTE",
 	"use_new_partition_format":true,
 	"buffer_size_kb": 65536,
-	"record_batch_size":"8000",
 	"runtime.error.topic.name":"kafka topic when runtime errors happens",
 	"runtime.error.topic.bootstrap.servers":"kafka bootstrap servers of error topic queue",
 	"skip_error":"false"
@@ -40,6 +40,7 @@
 - endpoint：访问MaxCompute的endpoint。
 - tunnel_endpoint: 访问MaxCompute tunnel 的endpoint，默认为""(自动路由，在某些docker环境下会存在外部无法访问的情况)
 - project：MaxCompute表所在的project。
+- schema: 适用于带有schema层级的project,默认为""
 - table：要写入的MaxCompute表。
 - account_type：MaxCompute鉴权方式，选项为STS或ALIYUN，默认ALIYUN。
 - access_id和access_key：若account_type为ALIYUN，则这两项配置为用户的access_id和access_key。否则保持为空即可，但不能不配置这两项。
@@ -51,7 +52,6 @@
 - partition_window_type：如何按照系统时间进行数据分区。例如，若配置为MINUTE，则每分钟开始时数据写到一个新的分区。可选值DAY、HOUR、MINUTE，默认HOUR。
 - use_new_partition_format:是否启用新的partitiont value 格式，true代表使用yyyy-MM-dd,否则使用MM-dd-yyyy
 - buffer_size_kb: 每个 odps partition writer 内部缓冲区大小，单位 KB。默认 65536 （64MB）
-- record_batch_size: 和sink_pool_size参数配套使用，设置一个task内部的一个线程最多可以一次并行发送多少消息
 - runtime.error.topic.name: 当connect内部写入某条数据发生未知错误时, 将错误记录写入Kafka消息队列中.默认为空
 - runtime.error.topic.bootstrap.servers: 与runtime.error.topic.name搭配使用, 错误消息写入Kafka的bootstrap servers地址
 - skip_error: 是否跳过发生未知写入错误的记录, 默认false不会跳过; 如果设置为true且未配置runtime.error.topic.name,则会丢弃错误记录的写入.

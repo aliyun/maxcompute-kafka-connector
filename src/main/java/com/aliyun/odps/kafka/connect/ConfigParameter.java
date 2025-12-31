@@ -74,7 +74,7 @@ public enum ConfigParameter {
     //POOL_SIZE("sink_pool_size", INT, Runtime.getRuntime().availableProcessors(), MEDIUM,
     //    "MaxCompute sink pool size"),
 
-    RECORD_BATCH_SIZE("record_batch_size", INT, 8000, MEDIUM, "max record size for single writer-thread"),
+    //RECORD_BATCH_SIZE("record_batch_size", INT, 8000, MEDIUM, "max record size for single writer-thread"),
 
     SKIP_ERROR("skip_error", BOOLEAN, Boolean.FALSE, LOW, "the task policy when internal errors happen, SKIP or EXIT");
 

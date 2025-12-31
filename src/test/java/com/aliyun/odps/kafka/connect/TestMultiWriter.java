@@ -33,7 +33,6 @@ import org.junit.Test;
 
 import static com.aliyun.odps.kafka.connect.ConfigParameter.FORMAT;
 import static com.aliyun.odps.kafka.connect.ConfigParameter.MODE;
-import static com.aliyun.odps.kafka.connect.ConfigParameter.RECORD_BATCH_SIZE;
 import static com.aliyun.odps.kafka.connect.ConfigParameter.RUNTIME_ERROR_TOPIC_BOOTSTRAP_SERVERS;
 import static com.aliyun.odps.kafka.connect.ConfigParameter.RUNTIME_ERROR_TOPIC_NAME;
 import static com.aliyun.odps.kafka.connect.ConfigParameter.SKIP_ERROR;
@@ -70,7 +69,6 @@ public class TestMultiWriter extends TestConnectorBase {
         connectorProps.put(VALUE_CONVERTER_CLASS_CONFIG, StringConverter.class.getName());
         connectorProps.put("value.converter.schemas.enable", "false");
         connectorProps.put("tasks.max", Integer.toString(task_num));
-        connectorProps.put(RECORD_BATCH_SIZE.getName(), "1000");
         // 先生成数据
         long totalMsg = 1000;
         mockDate(topics, totalMsg, connectCluster, "flatten.json", partition);
@@ -108,8 +106,6 @@ public class TestMultiWriter extends TestConnectorBase {
         connectorProps.put(FORMAT.getName(), "FLATTEN");
         connectorProps.put(MODE.getName(), "VALUE");
         connectorProps.put("tasks.max", Integer.toString(task_num));
-        connectorProps.put(RECORD_BATCH_SIZE.getName(),
-            "1000");
         connectorProps.put(SKIP_ERROR.getName(), "true");
         // 先生成数据
         long totalMsg = 2000;
@@ -150,7 +146,6 @@ public class TestMultiWriter extends TestConnectorBase {
         connectorProps.put(FORMAT.getName(), "FLATTEN");
         connectorProps.put(MODE.getName(), "VALUE");
         connectorProps.put("tasks.max", Integer.toString(task_num));
-        connectorProps.put(RECORD_BATCH_SIZE.getName(), "1000");
         connectorProps.put(SKIP_ERROR.getName(), "false");
         // 先生成数据
         long totalMsg = 2000;
@@ -253,7 +248,6 @@ public class TestMultiWriter extends TestConnectorBase {
         connectorProps.put(FORMAT.getName(), "FLATTEN");
         connectorProps.put(MODE.getName(), "VALUE");
         connectorProps.put("tasks.max", Integer.toString(task_num));
-        connectorProps.put(RECORD_BATCH_SIZE.getName(), "1000");
         connectorProps.put(SKIP_ERROR.getName(), "false");
         connectorProps.put(RUNTIME_ERROR_TOPIC_NAME.getName(), runTimeTopic);
         connectorProps.put(RUNTIME_ERROR_TOPIC_BOOTSTRAP_SERVERS.getName(), bootStrapServer);
