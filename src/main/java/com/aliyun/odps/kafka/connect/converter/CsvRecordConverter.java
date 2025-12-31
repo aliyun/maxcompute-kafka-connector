@@ -50,12 +50,10 @@ public class CsvRecordConverter implements RecordConverter {
 
     private static String NULL_TOKEN = "\\N";
 
-    private final TableSchema schema;
     private final RecordConverterBuilder.Mode mode;
     private List<Integer> userColIndex = new LinkedList<>();
 
     public CsvRecordConverter(TableSchema schema, RecordConverterBuilder.Mode mode) {
-        this.schema = schema;
         this.mode = mode;
 
         // Init userColIndex

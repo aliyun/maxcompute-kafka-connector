@@ -10,7 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.aliyun.odps.kafka.connect.MaxComputeSinkConnector;
-import com.aliyun.odps.kafka.connect.MaxComputeSinkConnectorConfig;
+import com.aliyun.odps.kafka.connect.ConnectorConfig;
 
 public class TestMCSinkConnector extends MaxComputeSinkConnector {
 
@@ -26,7 +26,7 @@ public class TestMCSinkConnector extends MaxComputeSinkConnector {
     commonConfigs = props;
     LOGGER.info("Starting connectorHandle {}", props.get("name"));
     connectorHandle.recordConnectorStart();
-    config = new MaxComputeSinkConnectorConfig(props);
+    config = new ConnectorConfig(props);
     LOGGER.info("Starting MaxCompute sink connector");
     for (Map.Entry<String, String> entry : props.entrySet()) {
       LOGGER.info(entry.getKey() + ": " + entry.getValue());
@@ -45,7 +45,7 @@ public class TestMCSinkConnector extends MaxComputeSinkConnector {
 
   @Override
   public Class<? extends Task> taskClass() {
-    return TestMCSinkTask.class;
+    return TestMCSinkTaskImpl.class;
   }
 
   @Override

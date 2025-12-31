@@ -1,6 +1,7 @@
 package com.aliyun.odps.kafka.connect;
 
 
+import static com.aliyun.odps.kafka.connect.ConfigParameter.*;
 import static org.apache.kafka.connect.runtime.ConnectorConfig.CONNECTOR_CLASS_CONFIG;
 import static org.apache.kafka.connect.runtime.WorkerConfig.KEY_CONVERTER_CLASS_CONFIG;
 import static org.apache.kafka.connect.runtime.WorkerConfig.VALUE_CONVERTER_CLASS_CONFIG;
@@ -46,11 +47,10 @@ TestSchemaWriter extends TestConnectorBase {
     connectorProps.put(KEY_CONVERTER_CLASS_CONFIG, StringConverter.class.getName());
     connectorProps.put(VALUE_CONVERTER_CLASS_CONFIG, StringConverter.class.getName());
     connectorProps.put("value.converter.schemas.enable", "false");
-    connectorProps.put(MaxComputeSinkConnectorConfig.BaseParameter.MODE.getName(), "VALUE");
-    connectorProps.put(MaxComputeSinkConnectorConfig.BaseParameter.POOL_SIZE.getName(), "8");
+    connectorProps.put(MODE.getName(), "VALUE");
+    connectorProps.put(POOL_SIZE.getName(), "8");
     connectorProps.put("tasks.max", "1");
-    connectorProps.put(MaxComputeSinkConnectorConfig.BaseParameter.RECORD_BATCH_SIZE.getName(),
-                       "1");
+    connectorProps.put(RECORD_BATCH_SIZE.getName(),"1");
     final Set<String> consumedRecordValues = new HashSet<>();
     Consumer<SinkRecord> onPut = record -> {
       Assert.assertTrue("Task received duplicate record from mc-connect",

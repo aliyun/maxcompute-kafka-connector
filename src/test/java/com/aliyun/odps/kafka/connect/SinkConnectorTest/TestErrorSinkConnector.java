@@ -8,6 +8,6 @@ public class TestErrorSinkConnector extends TestMCSinkConnector {
 
   @Override
   public Class<? extends Task> taskClass() {
-    return TestErrorSinkTask.class;
+    return TestErrorSinkTaskImpl.class;
   }
 }
