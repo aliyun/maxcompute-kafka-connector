@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.aliyun.odps.Column;
+import com.aliyun.odps.Column.ColumnBuilder;
 import com.aliyun.odps.Odps;
 import com.aliyun.odps.OdpsException;
 import com.aliyun.odps.TableSchema;
@@ -65,6 +66,7 @@ public class TestTableUtils {
 
         // Create schema for CSV test
         TableSchema schema = new TableSchema();
+        ColumnBuilder
         // Add standard Kafka Connect metadata columns
         schema.addColumn(new Column("topic", STRING));
         schema.addColumn(new Column("partition", BIGINT));

@@ -33,7 +33,6 @@ import org.junit.Test;
 
 import static com.aliyun.odps.kafka.connect.ConfigParameter.FORMAT;
 import static com.aliyun.odps.kafka.connect.ConfigParameter.MODE;
-import static com.aliyun.odps.kafka.connect.ConfigParameter.POOL_SIZE;
 import static com.aliyun.odps.kafka.connect.ConfigParameter.RECORD_BATCH_SIZE;
 import static com.aliyun.odps.kafka.connect.ConfigParameter.RUNTIME_ERROR_TOPIC_BOOTSTRAP_SERVERS;
 import static com.aliyun.odps.kafka.connect.ConfigParameter.RUNTIME_ERROR_TOPIC_NAME;
@@ -108,7 +107,6 @@ public class TestMultiWriter extends TestConnectorBase {
         connectorProps.put("value.converter.schemas.enable", "false");
         connectorProps.put(FORMAT.getName(), "FLATTEN");
         connectorProps.put(MODE.getName(), "VALUE");
-        connectorProps.put(POOL_SIZE.getName(), "8");
         connectorProps.put("tasks.max", Integer.toString(task_num));
         connectorProps.put(RECORD_BATCH_SIZE.getName(),
             "1000");
@@ -151,7 +149,6 @@ public class TestMultiWriter extends TestConnectorBase {
         connectorProps.put("value.converter.schemas.enable", "false");
         connectorProps.put(FORMAT.getName(), "FLATTEN");
         connectorProps.put(MODE.getName(), "VALUE");
-        connectorProps.put(POOL_SIZE.getName(), "8");
         connectorProps.put("tasks.max", Integer.toString(task_num));
         connectorProps.put(RECORD_BATCH_SIZE.getName(), "1000");
         connectorProps.put(SKIP_ERROR.getName(), "false");
@@ -255,7 +252,6 @@ public class TestMultiWriter extends TestConnectorBase {
         connectorProps.put("value.converter.schemas.enable", "false");
         connectorProps.put(FORMAT.getName(), "FLATTEN");
         connectorProps.put(MODE.getName(), "VALUE");
-        connectorProps.put(POOL_SIZE.getName(), "8");
         connectorProps.put("tasks.max", Integer.toString(task_num));
         connectorProps.put(RECORD_BATCH_SIZE.getName(), "1000");
         connectorProps.put(SKIP_ERROR.getName(), "false");

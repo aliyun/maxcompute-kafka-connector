@@ -48,7 +48,6 @@ TestSchemaWriter extends TestConnectorBase {
     connectorProps.put(VALUE_CONVERTER_CLASS_CONFIG, StringConverter.class.getName());
     connectorProps.put("value.converter.schemas.enable", "false");
     connectorProps.put(MODE.getName(), "VALUE");
-    connectorProps.put(POOL_SIZE.getName(), "8");
     connectorProps.put("tasks.max", "1");
     connectorProps.put(RECORD_BATCH_SIZE.getName(),"1");
     final Set<String> consumedRecordValues = new HashSet<>();
