@@ -34,20 +34,23 @@ import org.slf4j.LoggerFactory;
 
 import com.aliyun.odps.Odps;
 import com.aliyun.odps.OdpsException;
-import com.aliyun.odps.kafka.connect.MaxComputeSinkConnectorConfig.BaseParameter;
+
+import static com.aliyun.odps.kafka.connect.ConfigParameter.*;
 import com.aliyun.odps.kafka.connect.utils.OdpsUtils;
 
 /**
  * Connector entry class
+ *
+ * don't rename this class
  */
 public class MaxComputeSinkConnector extends SinkConnector {
 
   private static final Logger LOGGER = LoggerFactory.getLogger(MaxComputeSinkConnector.class);
-  protected MaxComputeSinkConnectorConfig config;
+  protected ConnectorConfig config;
 
   @Override
   public void start(Map<String, String> map) {
-    config = new MaxComputeSinkConnectorConfig(map);
+    config = new ConnectorConfig(map);
 
     LOGGER.info("Starting MaxCompute sink connector");
     for (Entry<String, String> entry : map.entrySet()) {
@@ -57,8 +60,8 @@ public class MaxComputeSinkConnector extends SinkConnector {
     Odps odps = OdpsUtils.getOdps(config);
 
     try {
-      odps.projects().exists(config.getString(BaseParameter.MAXCOMPUTE_PROJECT.getName()));
-      odps.tables().exists(config.getString(BaseParameter.MAXCOMPUTE_TABLE.getName()));
+      odps.projects().exists(MAXCOMPUTE_PROJECT.getString(config));
+      odps.tables().exists(MAXCOMPUTE_TABLE.getString(config));
     } catch (OdpsException e) {
       throw new IllegalArgumentException("Cannot find configured MaxCompute project or table");
     }
@@ -69,7 +72,7 @@ public class MaxComputeSinkConnector extends SinkConnector {
 
   @Override
   public Class<? extends Task> taskClass() {
-    return MaxComputeSinkTask.class;
+    return SinkTaskImpl.class;
   }
 
   @Override
@@ -84,83 +87,9 @@ public class MaxComputeSinkConnector extends SinkConnector {
 
   private Map<String, String> createTaskConfig() {
     Map<String, String> taskConfig = new HashMap<>();
-    taskConfig.put(BaseParameter.ACCESS_ID.getName(),
-                   config.getString(BaseParameter.ACCESS_ID.getName()));
-
-    taskConfig.put(BaseParameter.TUNNEL_ENDPOINT.getName(),
-                   config.getString(BaseParameter.TUNNEL_ENDPOINT.getName()));
-
-    taskConfig.put(BaseParameter.ACCESS_KEY.getName(),
-                   config.getString(BaseParameter.ACCESS_KEY.getName()));
-
-    taskConfig.put(BaseParameter.ACCOUNT_ID.getName(),
-                   config.getString(BaseParameter.ACCOUNT_ID.getName()));
-
-    taskConfig.put(BaseParameter.REGION_ID.getName(),
-                   config.getString(BaseParameter.REGION_ID.getName()));
-
-    taskConfig.put(BaseParameter.STS_ENDPOINT.getName(),
-                   config.getString(BaseParameter.STS_ENDPOINT.getName()));
-
-    taskConfig.put(BaseParameter.ROLE_NAME.getName(),
-                   config.getString(BaseParameter.ROLE_NAME.getName()));
-
-    taskConfig.put(BaseParameter.ACCOUNT_TYPE.getName(),
-                   config.getString(BaseParameter.ACCOUNT_TYPE.getName()));
-
-    taskConfig.put(BaseParameter.CLIENT_TIMEOUT_MS.getName(),
-                   String.valueOf(config.getLong(BaseParameter.CLIENT_TIMEOUT_MS.getName())));
-
-    taskConfig.put(BaseParameter.MAXCOMPUTE_PROJECT.getName(),
-                   config.getString(BaseParameter.MAXCOMPUTE_PROJECT.getName()));
-
-    taskConfig.put(BaseParameter.MAXCOMPUTE_SCHEMA.getName(),
-                   config.getString(BaseParameter.MAXCOMPUTE_SCHEMA.getName()));
-
-    taskConfig.put(BaseParameter.MAXCOMPUTE_ENDPOINT.getName(),
-                   config.getString(BaseParameter.MAXCOMPUTE_ENDPOINT.getName()));
-
-    taskConfig.put(BaseParameter.MAXCOMPUTE_TABLE.getName(),
-                   config.getString(BaseParameter.MAXCOMPUTE_TABLE.getName()));
-
-    taskConfig.put(BaseParameter.RUNTIME_ERROR_TOPIC_BOOTSTRAP_SERVERS.getName(),
-                   config.getString(BaseParameter.RUNTIME_ERROR_TOPIC_BOOTSTRAP_SERVERS.getName()));
-
-    taskConfig.put(BaseParameter.RUNTIME_ERROR_TOPIC_NAME.getName(),
-                   config.getString(BaseParameter.RUNTIME_ERROR_TOPIC_NAME.getName()));
-
-    taskConfig.put(BaseParameter.FORMAT.getName(),
-                   config.getString(BaseParameter.FORMAT.getName()));
-
-    taskConfig.put(BaseParameter.MODE.getName(), config.getString(BaseParameter.MODE.getName()));
-
-    taskConfig.put(BaseParameter.PARTITION_WINDOW_TYPE.getName(),
-                   config.getString(BaseParameter.PARTITION_WINDOW_TYPE.getName()));
-
-    taskConfig.put(BaseParameter.USE_NEW_PARTITION_FORMAT.getName(),
-            config.getBoolean(BaseParameter.USE_NEW_PARTITION_FORMAT.getName())? "TRUE": "FALSE");
-
-    taskConfig.put(BaseParameter.TIME_ZONE.getName(),
-                   config.getString(BaseParameter.TIME_ZONE.getName()));
-
-    taskConfig.put(BaseParameter.USE_STREAM_TUNNEL.getName(),
-                   config.getBoolean(BaseParameter.USE_STREAM_TUNNEL.getName()) ? "TRUE" : "FALSE");
-
-    taskConfig.put(BaseParameter.BUFFER_SIZE_KB.getName(),
-                   Integer.toString(config.getInt(BaseParameter.BUFFER_SIZE_KB.getName())));
-
-    taskConfig.put(BaseParameter.FAIL_RETRY_TIMES.getName(),
-                   Integer.toString(config.getInt(BaseParameter.FAIL_RETRY_TIMES.getName())));
-
-    taskConfig.put(BaseParameter.POOL_SIZE.getName(),
-                   Integer.toString(config.getInt(BaseParameter.POOL_SIZE.getName())));
-
-    taskConfig.put(BaseParameter.RECORD_BATCH_SIZE.getName(),
-                   Integer.toString(config.getInt(BaseParameter.RECORD_BATCH_SIZE.getName())));
-
-    taskConfig.put(BaseParameter.SKIP_ERROR.getName(),
-                   config.getBoolean(BaseParameter.SKIP_ERROR.getName()) ? "TRUE" : "FALSE");
-
+    for(ConfigParameter p:ConfigParameter.values()){
+      p.put(taskConfig,config);
+    }
     return taskConfig;
   }
 
@@ -171,7 +100,7 @@ public class MaxComputeSinkConnector extends SinkConnector {
 
   @Override
   public ConfigDef config() {
-    return MaxComputeSinkConnectorConfig.conf();
+    return ConnectorConfig.conf();
   }
 
   @Override

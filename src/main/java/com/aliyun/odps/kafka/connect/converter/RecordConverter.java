@@ -22,9 +22,8 @@ package com.aliyun.odps.kafka.connect.converter;
 
 import java.io.IOException;
 
-import org.apache.kafka.connect.sink.SinkRecord;
-
 import com.aliyun.odps.data.Record;
+import org.apache.kafka.connect.sink.SinkRecord;
 
 public interface RecordConverter {
 
@@ -38,7 +37,7 @@ public interface RecordConverter {
     String KEY = "key";
     String VALUE = "value";
 
-  /*paritioned key*/
+    /*partitioned key*/
     String PT = "pt";
 
     /**

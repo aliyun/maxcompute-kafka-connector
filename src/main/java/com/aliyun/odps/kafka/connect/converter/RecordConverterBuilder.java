@@ -99,7 +99,7 @@ public class RecordConverterBuilder {
        */
       CSV,
       /**
-       * Format is json
+       * Format is JSON
        */
       JSON,
       /**

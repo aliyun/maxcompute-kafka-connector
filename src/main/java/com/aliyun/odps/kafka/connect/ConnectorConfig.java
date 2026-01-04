@@ -20,12 +20,29 @@
 
 package com.aliyun.odps.kafka.connect;
 
-class VersionUtil {
-    public static String getVersion() {
-        try {
-            return VersionUtil.class.getPackage().getImplementationVersion();
-        } catch (Throwable e) {
-            return "0.0.0.0";
+import java.util.Map;
+
+import org.apache.kafka.common.config.AbstractConfig;
+import org.apache.kafka.common.config.ConfigDef;
+
+public class ConnectorConfig extends AbstractConfig {
+
+    private final Map<String, String> configMap;
+
+    public ConnectorConfig(Map<String, String> parsedConfig) {
+        super(conf(), parsedConfig);
+        this.configMap = parsedConfig;
+    }
+
+    public static ConfigDef conf() {
+        ConfigDef configDef = new ConfigDef();
+        for (ConfigParameter p : ConfigParameter.values()) {
+            configDef.define(p.getName(), p.getType(), p.getDefaultValue(), p.getImportance(), p.getDoc());
         }
+        return configDef;
+    }
+
+    public Map<String, String> getConfigMap() {
+        return configMap;
     }
 }

@@ -83,7 +83,7 @@ public class FlattenRecordConverter implements RecordConverter {
 
     private Map<String, Object> flattenFieldFromJson(Object sinkRecord)
       throws JsonProcessingException {
-        // flatten the json field to mc table schema without embedded format
+        // flatten the JSON field to mc table schema without embedded format
         if (sinkRecord instanceof HashMap) {
             return (HashMap<String, Object>) sinkRecord;
         }

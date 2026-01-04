@@ -7,7 +7,7 @@ public class TestSinkReadConnector extends TestMCSinkConnector {
 
   @Override
   public Class<? extends Task> taskClass() {
-    return TestSinkReadTask.class;
+    return TestSinkReadTaskImpl.class;
   }
 
 }
