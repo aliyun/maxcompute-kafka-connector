@@ -4,8 +4,8 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.aliyun.odps</groupId>
-    <artifactId>kafka-connector</artifactId>
-    <version>2.1.0</version>
+    <artifactId>kafka-connector-odps</artifactId>
+    <version>2.2.0</version>
     <packaging>jar</packaging>
 
     <name>kafka-connector</name>
