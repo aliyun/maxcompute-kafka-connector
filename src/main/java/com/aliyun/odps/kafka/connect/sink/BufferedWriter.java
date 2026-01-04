@@ -66,6 +66,7 @@ public class BufferedWriter {
     private Long partitionStartTime;
     private long batchInsertTime = -1;
     private long processedRecords = 0;
+    private long startOffset = -1;
     private long maxOffset = -1;
 
     public BufferedWriter(Odps odps, ConnectorConfig config, String project, String table, RecordConverter converter,
@@ -89,6 +90,7 @@ public class BufferedWriter {
     public synchronized boolean write(SinkRecord record) {
         // first record
         if (batchInsertTime == -1) {
+            startOffset = record.kafkaOffset();
             batchInsertTime = Instant.ofEpochMilli(System.currentTimeMillis()).atZone(tz.toZoneId()).toEpochSecond();
             try {
                 initStreamUploadSession(batchInsertTime);
@@ -117,7 +119,8 @@ public class BufferedWriter {
         if (streamSession != null && streamPack != null) {
             totalBytes = streamPack.getDataSize();
             try {
-                flushStreamPack();
+                streamPack.flush();
+                LOGGER.info("Flush records from {} to {}.", startOffset, maxOffset);
             } catch (IOException e) {
                 LOGGER.error("Failed to flush stream pack", e);
                 throw new RuntimeException(e);
@@ -130,36 +133,10 @@ public class BufferedWriter {
     private void reset() {
         processedRecords = 0;
         batchInsertTime = -1;
-    }
-
-    private void flushStreamPack() throws IOException {
-        int c = 0;
-        while (true) {
-            try {
-                streamPack.flush();
-                break;
-            } catch (IOException ex) {
-                if (c >= retryTimes) {
-                    // to reset session
-                    streamPack = null;
-                    throw ex;
-                }
-                LOGGER.warn("Failed to flush streaming pack, retrying after {} s", DEFAULT_RETRY_INTERVAL_SECONDS, ex);
-                try {
-                    Thread.sleep(DEFAULT_RETRY_INTERVAL_SECONDS * 1000);
-                } catch (InterruptedException e) {
-                    LOGGER.warn("Retry sleep is interrupted, retry immediately", e);
-                }
-                c++;
-            }
-        }
+        startOffset = -1;
     }
 
     private void initStreamUploadSession(long timestamp) throws OdpsException, IOException {
-        if (!isDifferentPartition(timestamp)) {
-            return;
-        }
-
         if (LOGGER.isDebugEnabled()) {
             LOGGER.debug("Thread({}) Reset stream upload session, last timestamp: {}, current: {}",
                 Thread.currentThread().getId(), partitionStartTime, timestamp);
@@ -173,22 +150,6 @@ public class BufferedWriter {
             streamSession.getId());
         streamPack = streamSession.newRecordPack(new CompressOption());
         reusedRecord = streamSession.newRecord();
-    }
-
-    private boolean isDifferentPartition(long timestamp) {
-        if (partitionStartTime == null || streamSession == null || streamPack == null) {
-            return true;
-        }
-        switch (partitionWindowType) {
-            case DAY:
-                return timestamp >= partitionStartTime + 24 * 60 * 60;
-            case HOUR:
-                return timestamp >= partitionStartTime + 60 * 60;
-            case MINUTE:
-                return timestamp >= partitionStartTime + 60;
-            default:
-                return true;
-        }
     }
 
     private PartitionSpec buildPartitionSpec(long timestamp) {

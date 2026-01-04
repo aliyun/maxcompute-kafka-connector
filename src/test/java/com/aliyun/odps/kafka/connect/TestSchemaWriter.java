@@ -49,7 +49,7 @@ TestSchemaWriter extends TestConnectorBase {
     connectorProps.put("value.converter.schemas.enable", "false");
     connectorProps.put(MODE.getName(), "VALUE");
     connectorProps.put("tasks.max", "1");
-    connectorProps.put(RECORD_BATCH_SIZE.getName(),"1");
+    connectorProps.put(BUFFER_SIZE_KB.getName(),"64000");
     final Set<String> consumedRecordValues = new HashSet<>();
     Consumer<SinkRecord> onPut = record -> {
       Assert.assertTrue("Task received duplicate record from mc-connect",

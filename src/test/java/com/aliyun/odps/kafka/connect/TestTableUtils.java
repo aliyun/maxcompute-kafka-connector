@@ -66,7 +66,6 @@ public class TestTableUtils {
 
         // Create schema for CSV test
         TableSchema schema = new TableSchema();
-        ColumnBuilder
         // Add standard Kafka Connect metadata columns
         schema.addColumn(new Column("topic", STRING));
         schema.addColumn(new Column("partition", BIGINT));
