@@ -36,8 +36,8 @@ cd maxcompute-kafka-connector
 mvn clean package
 
 # 构建完成后，会在 target 目录下生成 jar 包
-# target/kafka-connector-odps-2.1.0.jar
-# target/kafka-connector-odps-2.1.0-jar-with-dependencies.jar
+# target/kafka-connect-maxcompute-2.3.0.jar
+# target/kafka-connect-maxcompute-2.3.0-jar-with-dependencies.jar
 ```
 
 ### 3. 配置 Connector
@@ -67,7 +67,7 @@ buffer_size_kb=65536
 ```bash
 # 复制 jar 包到 Kafka Connect plugins 目录
 mkdir -p $KAFKA_HOME/plugins/maxcompute-connector
-cp target/kafka-connector-odps-2.1.0-jar-with-dependencies.jar $KAFKA_HOME/plugins/maxcompute-connector/
+cp target/kafka-connect-maxcompute-2.3.0-jar-with-dependencies.jar $KAFKA_HOME/plugins/maxcompute-connector/
 
 # 启动 Kafka Connect
 bin/connect-standalone.sh config/connect-standalone.properties mc-sink-connector.properties
