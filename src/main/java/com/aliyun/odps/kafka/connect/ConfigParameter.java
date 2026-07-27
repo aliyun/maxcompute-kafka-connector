@@ -53,6 +53,9 @@ public enum ConfigParameter {
 
     FORMAT("format", "TEXT", HIGH, "Input format, could be TEXT or CSV"),
 
+    CSV_DELIMITER("csv_delimiter", ",", MEDIUM,
+        "CSV delimiter. Use \\t for a tab character"),
+
     MODE("mode", "DEFAULT", HIGH, "Mode, could be default, key, or value"),
 
     PARTITION_WINDOW_TYPE("partition_window_type", "HOUR",

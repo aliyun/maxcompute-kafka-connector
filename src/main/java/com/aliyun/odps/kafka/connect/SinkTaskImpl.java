@@ -41,6 +41,7 @@ import org.apache.kafka.connect.sink.SinkTaskContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static com.aliyun.odps.kafka.connect.ConfigParameter.CSV_DELIMITER;
 import static com.aliyun.odps.kafka.connect.ConfigParameter.FORMAT;
 import static com.aliyun.odps.kafka.connect.ConfigParameter.MAXCOMPUTE_PROJECT;
 import static com.aliyun.odps.kafka.connect.ConfigParameter.MAXCOMPUTE_TABLE;
@@ -84,7 +85,7 @@ public class SinkTaskImpl extends SinkTask {
         RecordConverterBuilder.Mode mode = RecordConverterBuilder.Mode.valueOf(MODE.getString(config));
 
         RecordConverterBuilder converterBuilder = new RecordConverterBuilder();
-        converterBuilder.format(format).mode(mode);
+        converterBuilder.format(format).mode(mode).csvDelimiter(CSV_DELIMITER.getString(config));
         converterBuilder.schema(odps.tables().get(table).getSchema());
         recordConverter = converterBuilder.build();
 

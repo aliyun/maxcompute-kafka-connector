@@ -134,6 +134,7 @@ mvn test -Dtest=TestMaxComputeSinkConnectorIntegration
 	"role_name": "role name for sts",
 	"client_timeout_ms": "STS Token valid period (ms)",
 	"format": "TEXT",
+	"csv_delimiter": "\t",
 	"mode": "KEY",
 	"partition_window_type": "MINUTE",
 	"use_new_partition_format":true,
@@ -160,6 +161,7 @@ mvn test -Dtest=TestMaxComputeSinkConnectorIntegration
 - client_timeout_ms：刷新STS Token的时间间隔，单位为毫秒，默认值为11小时对应的毫秒数。
 - sts.endpoint：可选配置，保持默认即可。
 - format：消息的格式，详细解释见官方文档，可选值为TEXT、BINARY与CSV，默认TEXT。
+- csv_delimiter：CSV消息的字段分隔符，仅在format为CSV时生效，默认为逗号（,）。Tab分隔符配置为"\t"。
 - mode：此connector的处理模式，详细解释见官方文档，可选值为：KEY，VALUE，DEFAULT，默认DEFAULT。
 - partition_window_type：如何按照系统时间进行数据分区。例如，若配置为MINUTE，则每分钟开始时数据写到一个新的分区。可选值DAY、HOUR、MINUTE，默认HOUR。
 - use_new_partition_format:是否启用新的partitiont value 格式，true代表使用yyyy-MM-dd,否则使用MM-dd-yyyy

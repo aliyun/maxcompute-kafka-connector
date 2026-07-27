@@ -43,6 +43,8 @@ public class RecordConverterBuilder {
 
   private Mode mode = Mode.DEFAULT;
 
+  private String csvDelimiter = ",";
+
   public RecordConverter build() {
     switch (format) {
       case TEXT:
@@ -59,7 +61,7 @@ public class RecordConverterBuilder {
             "Unsupported combination, schema is null , format: " + format);
         }
         if (Mode.DEFAULT != mode) {
-          return new CsvRecordConverter(schema, mode);
+          return new CsvRecordConverter(schema, mode, csvDelimiter);
         }
     }
     throw new IllegalArgumentException(
@@ -82,6 +84,11 @@ public class RecordConverterBuilder {
 
   public RecordConverterBuilder schema(TableSchema schema) {
     this.schema = schema;
+    return this;
+  }
+
+  public RecordConverterBuilder csvDelimiter(String csvDelimiter) {
+    this.csvDelimiter = csvDelimiter;
     return this;
   }
 

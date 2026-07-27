@@ -51,10 +51,16 @@ public class CsvRecordConverter implements RecordConverter {
     private static String NULL_TOKEN = "\\N";
 
     private final RecordConverterBuilder.Mode mode;
+    private final char delimiter;
     private List<Integer> userColIndex = new LinkedList<>();
 
     public CsvRecordConverter(TableSchema schema, RecordConverterBuilder.Mode mode) {
+        this(schema, mode, ",");
+    }
+
+    public CsvRecordConverter(TableSchema schema, RecordConverterBuilder.Mode mode, String delimiter) {
         this.mode = mode;
+        this.delimiter = parseDelimiter(delimiter);
 
         // Init userColIndex
         for (int i = 0; i < schema.getColumns().size(); i++) {
@@ -84,7 +90,7 @@ public class CsvRecordConverter implements RecordConverter {
             throw new RuntimeException("Unsupported mode for CsvConverter: " + mode);
         }
 
-        String[] row = load(data);
+        String[] row = load(data, delimiter);
         if (out.getColumnCount() - 4 != row.length) {
             throw new RuntimeException("Column count doesn't match: " + data);
         }
@@ -99,9 +105,20 @@ public class CsvRecordConverter implements RecordConverter {
         }
     }
 
-    private static String[] load(String data) throws IOException {
+    static char parseDelimiter(String delimiter) {
+        if ("\\t".equals(delimiter)) {
+            return '\t';
+        }
+        if (delimiter == null || delimiter.length() != 1) {
+            throw new IllegalArgumentException(
+                "csv_delimiter must be exactly one character; use \\t for a tab character");
+        }
+        return delimiter.charAt(0);
+    }
+
+    static String[] load(String data, char delimiter) throws IOException {
         InputStream is = new ByteArrayInputStream(data.getBytes(StandardCharsets.UTF_8));
-        CsvReader csvReader = new CsvReader(new InputStreamReader(is, StandardCharsets.UTF_8), ',');
+        CsvReader csvReader = new CsvReader(new InputStreamReader(is, StandardCharsets.UTF_8), delimiter);
 
         String[] row;
         if (csvReader.readRecord()) {
