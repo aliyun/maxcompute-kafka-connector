@@ -26,10 +26,13 @@ import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
+import org.apache.kafka.test.IntegrationTest;
+import org.junit.experimental.categories.Category;
 
 import com.aliyun.odps.OdpsException;
 import com.aliyun.odps.kafka.connect.SinkConnectorTest.TestMCSinkConnector;
 
+@Category(IntegrationTest.class)
 public class TestCsvRecord extends TestConnectorBase {
 
   // 测试json 数据的读取写入

@@ -17,13 +17,16 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
+import org.apache.kafka.test.IntegrationTest;
 import org.junit.Ignore;
 import org.junit.Test;
+import org.junit.experimental.categories.Category;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.aliyun.odps.kafka.connect.utils.JsonHandler;
 
+@Category(IntegrationTest.class)
 @Ignore("Need a kafka broker")
 public class TestKafkaProducer {
 

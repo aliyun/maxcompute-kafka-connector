@@ -17,6 +17,13 @@
         <kafka.connect.storage.common.version>11.1.4</kafka.connect.storage.common.version>
 
         <jackson.version>2.13.4.2</jackson.version>
+
+        <!-- 测试门禁：不指定 profile 时只跑无需云凭据的单元/转换/配置回归。
+             集成用例统一打 @Category(IntegrationTest.class)，由 -Pintegration-tests 显式开启。 -->
+        <maven.surefire.version>2.22.2</maven.surefire.version>
+        <maven.jar.version>2.4</maven.jar.version><!-- 与 Maven 3.8 之前解析到的版本一致，仅为消除漂移 -->
+        <test.groups></test.groups>
+        <test.excludedGroups>org.apache.kafka.test.IntegrationTest</test.excludedGroups>
     </properties>
 
     <dependencyManagement>
@@ -134,6 +141,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-jar-plugin</artifactId>
+                <version>${maven.jar.version}</version>
                 <configuration>
                     <archive>
                         <manifest>
@@ -142,6 +150,29 @@
                         </manifest>
                     </archive>
                 </configuration>
+            </plugin>
+            <!-- PR 回归门禁的测试执行器：固定 provider 与发现范围，用例数为 0 时必须失败 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>${maven.surefire.version}</version>
+                <configuration>
+                    <groups>${test.groups}</groups>
+                    <excludedGroups>${test.excludedGroups}</excludedGroups>
+                    <failIfNoTests>true</failIfNoTests>
+                    <trimStackTrace>false</trimStackTrace>
+                    <rerunFailingTestsCount>0</rerunFailingTestsCount>
+                    <redirectTestOutputToFile>true</redirectTestOutputToFile>
+                </configuration>
+                <dependencies>
+                    <!-- 显式绑定 JUnit4 provider：classpath 上同时有 junit4 与 junit-jupiter-api，
+                         不指定 provider 时选择结果会随 surefire 版本漂移。 -->
+                    <dependency>
+                        <groupId>org.apache.maven.surefire</groupId>
+                        <artifactId>surefire-junit47</artifactId>
+                        <version>${maven.surefire.version}</version>
+                    </dependency>
+                </dependencies>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -178,6 +209,17 @@
             </resource>
         </resources>
     </build>
+    <profiles>
+        <profile>
+            <!-- 真实 Kafka + MaxCompute 集成回归：需要云凭据，PR 门禁不跑这一档 -->
+            <id>integration-tests</id>
+            <properties>
+                <test.groups>org.apache.kafka.test.IntegrationTest</test.groups>
+                <test.excludedGroups></test.excludedGroups>
+            </properties>
+        </profile>
+    </profiles>
+
     <repositories>
         <repository>
             <id>confluent</id>

@@ -30,6 +30,8 @@ import org.apache.kafka.connect.util.clusters.EmbeddedConnectCluster;
 import org.junit.Assert;
 import org.junit.Ignore;
 import org.junit.Test;
+import org.apache.kafka.test.IntegrationTest;
+import org.junit.experimental.categories.Category;
 
 import static com.aliyun.odps.kafka.connect.ConfigParameter.FORMAT;
 import static com.aliyun.odps.kafka.connect.ConfigParameter.MODE;
@@ -40,6 +42,7 @@ import static org.apache.kafka.connect.runtime.ConnectorConfig.CONNECTOR_CLASS_C
 import static org.apache.kafka.connect.runtime.WorkerConfig.KEY_CONVERTER_CLASS_CONFIG;
 import static org.apache.kafka.connect.runtime.WorkerConfig.VALUE_CONVERTER_CLASS_CONFIG;
 
+@Category(IntegrationTest.class)
 public class TestMultiWriter extends TestConnectorBase {
 
     // 多线程写入测试类

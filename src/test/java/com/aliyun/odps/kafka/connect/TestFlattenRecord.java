@@ -15,6 +15,8 @@ import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
+import org.apache.kafka.test.IntegrationTest;
+import org.junit.experimental.categories.Category;
 
 import java.io.IOException;
 import java.util.HashSet;
@@ -29,6 +31,7 @@ import static org.apache.kafka.connect.runtime.WorkerConfig.KEY_CONVERTER_CLASS_
 import static org.apache.kafka.connect.runtime.WorkerConfig.VALUE_CONVERTER_CLASS_CONFIG;
 import static org.apache.kafka.test.TestUtils.waitForCondition;
 
+@Category(IntegrationTest.class)
 public class TestFlattenRecord extends TestConnectorBase {
 
   // 测试flatten 数据的读取写入
