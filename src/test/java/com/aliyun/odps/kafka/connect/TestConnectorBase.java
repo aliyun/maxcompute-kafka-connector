@@ -18,6 +18,7 @@ import org.apache.kafka.connect.util.clusters.EmbeddedConnectCluster;
 import org.apache.kafka.test.IntegrationTest;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.BeforeClass;
 import org.junit.experimental.categories.Category;
 
 import com.aliyun.odps.kafka.connect.SinkConnectorTest.TestMCSinkConnector;
@@ -31,6 +32,14 @@ public class TestConnectorBase {
   public static final int WORKER_NUM = 3;
 
   public static final long TASK_CONSUME_TIMEOUT_MS = 20_000L;
+
+  /**
+   * 集成用例的前置条件：没有云凭据就直接失败，不能被报成通过。
+   */
+  @BeforeClass
+  public static void requireMaxComputeCredentials() {
+    TestCredentials.requireMaxComputeEnv();
+  }
 
   public EmbeddedConnectCluster connectCluster;
 

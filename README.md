@@ -97,20 +97,54 @@ done
 SELECT * FROM your_table_name;
 ```
 
-### 7. 运行集成测试
+### 7. 运行测试
 
-如果需要运行项目的集成测试，需要先配置环境变量：
+测试分两档，靠 JUnit `@Category(IntegrationTest.class)` 区分，配置在 `pom.xml` 里：
+
+| 档位 | 命令 | 依赖 | 说明 |
+| --- | --- | --- | --- |
+| 单元回归（PR 门禁） | `mvn clean test` | 无需云凭据、无需 Kafka broker | 纯转换 / 配置 / 类型映射；CI 每次 PR 都跑 |
+| 集成回归 | `mvn clean test -Pintegration-tests` | 真实 MaxCompute 凭据（Kafka 用内嵌 cluster） | 只有显式开启该 profile 才执行 |
+
+#### 7.1 单元回归（提交 PR 前本地先跑）
 
 ```bash
-# 设置环境变量
+# 与 GitHub Actions 的 CI 任务完全等价的两步
+./scripts/verify-ci.sh unit
+```
+
+它会执行 `mvn clean test`（自动排除 `IntegrationTest` 分类），再用
+`tools/check-test-reports.py` 校验 surefire 报告：发现的测试类集合必须与
+`tools/test-manifest.json` 完全一致，用例数不得低于清单下限，且失败 / 错误 / 跳过都为 0。
+新增或删除测试类时请同步更新该清单（PR 描述里说明一句即可）。
+
+想确认门禁本身可信（故意失败的用例会阻断、缺凭据的集成档不会假绿）：
+
+```bash
+./scripts/verify-ci.sh drill
+```
+
+#### 7.2 集成回归（需要云凭据）
+
+先配置环境变量，缺任意一项时集成用例会直接失败并提示，不会被记为"集成通过"：
+
+```bash
 export ALIBABA_CLOUD_ACCESS_KEY_ID="your_access_id"
 export ALIBABA_CLOUD_ACCESS_KEY_SECRET="your_access_key"
 export odps_endpoint="your_odps_endpoint"
 export MAXCOMPUTE_PROJECT="your_project_name"
 
-# 运行集成测试
-mvn test -Dtest=TestMaxComputeSinkConnectorIntegration
+# 全部集成用例
+./scripts/verify-ci.sh integration
+
+# 只跑某一个入口
+mvn test -Pintegration-tests -Dtest=TestMaxComputeSinkConnectorIntegration
 ```
+
+集成用例会用 `TestTableUtils` 在目标 project 里建 `kafka_*_test_table` 等测试表，
+请在专用测试 project 上运行。GitHub 上的入口是 `Integration tests (Kafka + MaxCompute)`
+工作流（手动触发，需要先在 repository secrets 里配置 `MAXCOMPUTE_ACCESS_KEY_ID`、
+`MAXCOMPUTE_ACCESS_KEY_SECRET`、`MAXCOMPUTE_ENDPOINT`、`MAXCOMPUTE_PROJECT`）。
 
 ## Configuration example
 ````$xslt

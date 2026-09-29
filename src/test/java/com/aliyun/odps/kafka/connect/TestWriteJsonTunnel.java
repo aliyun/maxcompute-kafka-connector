@@ -5,8 +5,10 @@ import java.util.Map;
 import org.junit.Assert;
 import org.junit.Ignore;
 import org.junit.Test;
+import org.junit.experimental.categories.Category;
 
 import com.aliyun.odps.Odps;
+import org.apache.kafka.test.IntegrationTest;
 import com.aliyun.odps.account.Account;
 import com.aliyun.odps.account.AliyunAccount;
 import com.aliyun.odps.data.ArrayRecord;
@@ -16,6 +18,7 @@ import com.aliyun.odps.kafka.connect.utils.ConfigHelper;
 import com.aliyun.odps.tunnel.TableTunnel;
 import com.aliyun.odps.tunnel.TableTunnel.UploadSession;
 
+@Category(IntegrationTest.class)
 public class TestWriteJsonTunnel {
 
   // 测试将JSON数据通过Tunnel API写入MaxCompute表的功能

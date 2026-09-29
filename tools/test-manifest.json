@@ -1,0 +1,35 @@
+{
+  "_comment": "PR 门禁的测试发现清单。classes 必须与 surefire 报告的类集合完全一致；新增/删除用例类或改变用例数下限时同步修改本文件并在 PR 描述里说明。",
+  "unit_note": "unit 档 = 不读任何云凭据、不启动 Kafka broker 的纯转换/配置/类型映射回归。",
+  "integration_note": "integration 档 = @Category(IntegrationTest.class) 的用例，需要真实 MaxCompute 凭据（TestConnectorBase 会先校验环境变量）。",
+  "profiles": {
+    "unit": {
+      "classes": [
+        "com.aliyun.odps.kafka.connect.ConfigParameterTest",
+        "com.aliyun.odps.kafka.connect.ConnectorConfigTest",
+        "com.aliyun.odps.kafka.connect.converter.BinaryRecordConverterTest",
+        "com.aliyun.odps.kafka.connect.converter.CsvRecordConverterTest",
+        "com.aliyun.odps.kafka.connect.converter.DefaultRecordConverterTest",
+        "com.aliyun.odps.kafka.connect.converter.FlattenRecordConverterTest",
+        "com.aliyun.odps.kafka.connect.converter.JsonRecordConverterTest",
+        "com.aliyun.odps.kafka.connect.converter.RecordConverterBuilderTest",
+        "com.aliyun.odps.kafka.connect.utils.ConverterHelperTest"
+      ],
+      "min_tests": 60
+    },
+    "integration": {
+      "classes": [
+        "com.aliyun.odps.kafka.connect.TestCsvRecord",
+        "com.aliyun.odps.kafka.connect.TestFlattenRecord",
+        "com.aliyun.odps.kafka.connect.TestJsonRecord",
+        "com.aliyun.odps.kafka.connect.TestKafkaProducer",
+        "com.aliyun.odps.kafka.connect.TestMaxComputeSinkConnectorIntegration",
+        "com.aliyun.odps.kafka.connect.TestMultiWriter",
+        "com.aliyun.odps.kafka.connect.TestSchemaWriter",
+        "com.aliyun.odps.kafka.connect.TestStringJsonSink",
+        "com.aliyun.odps.kafka.connect.TestWriteJsonTunnel"
+      ],
+      "min_tests": 9
+    }
+  }
+}

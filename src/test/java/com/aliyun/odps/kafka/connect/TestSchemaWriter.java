@@ -20,9 +20,12 @@ import org.apache.kafka.connect.sink.SinkRecord;
 import org.apache.kafka.connect.storage.StringConverter;
 import org.junit.Assert;
 import org.junit.Test;
+import org.apache.kafka.test.IntegrationTest;
+import org.junit.experimental.categories.Category;
 
 import com.aliyun.odps.kafka.connect.SinkConnectorTest.TestMCSinkConnector;
 
+@Category(IntegrationTest.class)
 public class
 TestSchemaWriter extends TestConnectorBase {
 

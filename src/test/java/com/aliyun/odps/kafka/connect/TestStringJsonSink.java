@@ -19,10 +19,13 @@ import org.apache.kafka.connect.storage.StringConverter;
 import org.junit.Assert;
 import org.junit.Ignore;
 import org.junit.Test;
+import org.apache.kafka.test.IntegrationTest;
+import org.junit.experimental.categories.Category;
 
 import com.aliyun.odps.kafka.connect.SinkConnectorTest.TestMCSinkConnector;
 import com.aliyun.odps.kafka.connect.utils.JsonHandler;
 
+@Category(IntegrationTest.class)
 public class TestStringJsonSink extends TestConnectorBase {
 
   // 测试JSON数据的读取和写入功能

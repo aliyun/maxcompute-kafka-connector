@@ -1,0 +1,71 @@
+# 真实 Kafka + MaxCompute 集成回归（手动触发）。
+# 与 PR 门禁分开：这一档需要仓库配置好云凭据 secrets，缺凭据时直接失败，不会记为通过。
+name: Integration tests (Kafka + MaxCompute)
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_classes:
+        description: '可选：只跑指定测试类（如 TestMaxComputeSinkConnectorIntegration），留空跑全部'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  integration-tests:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    env:
+      ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.MAXCOMPUTE_ACCESS_KEY_ID }}
+      ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ secrets.MAXCOMPUTE_ACCESS_KEY_SECRET }}
+      odps_endpoint: ${{ secrets.MAXCOMPUTE_ENDPOINT }}
+      MAXCOMPUTE_PROJECT: ${{ secrets.MAXCOMPUTE_PROJECT }}
+    steps:
+      - name: Preflight credentials
+        run: |
+          missing=0
+          for name in ALIBABA_CLOUD_ACCESS_KEY_ID ALIBABA_CLOUD_ACCESS_KEY_SECRET odps_endpoint MAXCOMPUTE_PROJECT; do
+            if [ -z "${!name}" ]; then
+              echo "::error::缺少环境变量 $name（对应 repository secret 未配置）"
+              missing=1
+            fi
+          done
+          if [ "$missing" = "1" ]; then
+            echo "::error::集成测试未运行，本次不会记为通过"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+          cache: maven
+
+      - name: Run integration tests
+        run: |
+          if [ -n "${{ github.event.inputs.test_classes }}" ]; then
+            mvn -B -ntp clean test -Pintegration-tests \
+              -Dtest='${{ github.event.inputs.test_classes }}' \
+              -Dsurefire.failIfNoSpecifiedTests=true
+          else
+            mvn -B -ntp clean test -Pintegration-tests
+          fi
+
+      - name: Verify test discovery
+        if: ${{ !github.event.inputs.test_classes }}
+        run: python3 tools/check-test-reports.py --profile integration
+
+      - name: Upload surefire reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-surefire-reports
+          path: target/surefire-reports/
+          if-no-files-found: error
