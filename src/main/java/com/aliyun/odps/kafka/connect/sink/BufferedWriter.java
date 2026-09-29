@@ -72,7 +72,12 @@ public class BufferedWriter {
     public BufferedWriter(Odps odps, ConnectorConfig config, String project, String table, RecordConverter converter,
         ErrantRecordReporter errorReporter) {
 
-        this.tunnel = OdpsUtils.getTableTunnel(odps, config);
+        this(OdpsUtils.getTableTunnel(odps, config), config, project, table, converter, errorReporter);
+    }
+
+    BufferedWriter(TableTunnel tunnel, ConnectorConfig config, String project, String table,
+                   RecordConverter converter, ErrantRecordReporter errorReporter) {
+        this.tunnel = tunnel;
         this.project = Objects.requireNonNull(project);
         this.table = Objects.requireNonNull(table);
         this.converter = Objects.requireNonNull(converter);
@@ -90,10 +95,11 @@ public class BufferedWriter {
     public synchronized boolean write(SinkRecord record) {
         // first record
         if (batchInsertTime == -1) {
-            startOffset = record.kafkaOffset();
-            batchInsertTime = Instant.ofEpochMilli(System.currentTimeMillis()).atZone(tz.toZoneId()).toEpochSecond();
+            long timestamp = Instant.ofEpochMilli(System.currentTimeMillis()).atZone(tz.toZoneId()).toEpochSecond();
             try {
-                initStreamUploadSession(batchInsertTime);
+                initStreamUploadSession(timestamp);
+                startOffset = record.kafkaOffset();
+                batchInsertTime = timestamp;
             } catch (Throwable e) {
                 LOGGER.error("resetStreamUploadSession failed", e);
                 throw new RuntimeException(e);
@@ -116,7 +122,8 @@ public class BufferedWriter {
 
     public synchronized Status flushAndReset() {
         long totalBytes = 0;
-        if (streamSession != null && streamPack != null) {
+        long batchProcessedRecords = processedRecords;
+        if (batchInsertTime != -1 && streamSession != null && streamPack != null) {
             totalBytes = streamPack.getDataSize();
             try {
                 streamPack.flush();
@@ -127,7 +134,7 @@ public class BufferedWriter {
             }
             reset();
         }
-        return new Status(maxOffset, processedRecords, totalBytes);
+        return new Status(maxOffset, batchProcessedRecords, totalBytes);
     }
 
     private void reset() {
@@ -141,15 +148,25 @@ public class BufferedWriter {
             LOGGER.debug("Thread({}) Reset stream upload session, last timestamp: {}, current: {}",
                 Thread.currentThread().getId(), partitionStartTime, timestamp);
         }
-        setPartitionStartTime(timestamp);
-        PartitionSpec partitionSpec = buildPartitionSpec(partitionStartTime);
-
-        streamSession = tunnel.buildStreamUploadSession(project, table).setPartitionSpec(partitionSpec)
-            .setCreatePartition(true).build();
+        long targetPartitionStartTime = partitionStartTimeFor(timestamp);
+        // A successful pack flush resets its buffer; the session remains valid
+        // for subsequent batches in the same partition window.
+        if (streamSession != null && Objects.equals(partitionStartTime, targetPartitionStartTime)) {
+            return;
+        }
+        PartitionSpec partitionSpec = buildPartitionSpec(targetPartitionStartTime);
+        TableTunnel.StreamUploadSession nextSession = tunnel.buildStreamUploadSession(project, table)
+            .setPartitionSpec(partitionSpec).setCreatePartition(true).build();
+        TableTunnel.StreamRecordPack nextPack = nextSession.newRecordPack(new CompressOption());
+        Record nextRecord = nextSession.newRecord();
+        // Publish new state only after construction succeeds. A failed window
+        // transition must never make the old session look valid for the new one.
+        streamSession = nextSession;
+        streamPack = nextPack;
+        reusedRecord = nextRecord;
+        partitionStartTime = targetPartitionStartTime;
         LOGGER.info("Thread({}) create streaming session {} successfully!", Thread.currentThread().getId(),
             streamSession.getId());
-        streamPack = streamSession.newRecordPack(new CompressOption());
-        reusedRecord = streamSession.newRecord();
     }
 
     private PartitionSpec buildPartitionSpec(long timestamp) {
@@ -194,7 +211,7 @@ public class BufferedWriter {
         return partitionSpec;
     }
 
-    private long setPartitionStartTime(long timestamp) {
+    private long partitionStartTimeFor(long timestamp) {
         ZonedDateTime dt = Instant.ofEpochSecond(timestamp).atZone(tz.toZoneId());
         int year = dt.getYear();
         int month = dt.getMonthValue();
@@ -216,12 +233,12 @@ public class BufferedWriter {
                 throw new RuntimeException("Unsupported partition window type");
         }
         ZonedDateTime dateTime = ZonedDateTime.of(year, month, day, hour, minute, 0, 0, tz.toZoneId());
-        partitionStartTime = dateTime.toEpochSecond();
+        long startTime = dateTime.toEpochSecond();
 
         if (LOGGER.isDebugEnabled()) {
             LOGGER.debug("Thread({}) reset partition start time to {}", Thread.currentThread().getId(),
-                partitionStartTime);
+                startTime);
         }
-        return partitionStartTime;
+        return startTime;
     }
 }
