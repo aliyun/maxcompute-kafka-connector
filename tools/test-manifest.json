@@ -15,11 +15,12 @@
         "com.aliyun.odps.kafka.connect.converter.FlattenRecordConverterTest",
         "com.aliyun.odps.kafka.connect.converter.JsonRecordConverterTest",
         "com.aliyun.odps.kafka.connect.converter.RecordConverterBuilderTest",
+        "com.aliyun.odps.kafka.connect.ErrorReporterTest",
         "com.aliyun.odps.kafka.connect.sink.BufferedWriterEmptyWindowFlushTest",
+        "com.aliyun.odps.kafka.connect.sink.BufferedWriterRecordErrorPolicyTest",
         "com.aliyun.odps.kafka.connect.utils.ConverterHelperTest"
       ],
-      "min_tests": 76
-    },
+      "min_tests": 122    },
     "integration": {
       "classes": [
         "com.aliyun.odps.kafka.connect.TestCsvRecord",

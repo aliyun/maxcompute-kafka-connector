@@ -82,4 +82,30 @@ public class DefaultRecordConverterTest {
   public void modeIsRequired() {
     new DefaultRecordConverter(null);
   }
+
+  /**
+   * 脏数据矩阵（本项验收 A1）：TEXT 模式的墓碑记录（value 为 NULL）不写这一列。
+   * 载体是否干净由调用方保证——跨记录的残留（实测确实会残留上一条的 "hello"）由
+   * {@code BufferedWriterRecordErrorPolicyTest} 在写入路径上钉住。
+   */
+  @Test
+  public void nullValueTombstoneLeavesTheValueColumnUnset() throws Exception {
+    TableSchema schema = Fixtures.schemaWithFixedColumns(
+        col(RecordConverter.KEY, STRING), col(RecordConverter.VALUE, STRING));
+    Record out = new ArrayRecord(schema);
+    new DefaultRecordConverter(Mode.VALUE).convert(sinkRecord(null, null), out);
+    Assert.assertNull("value 为 NULL 时不写这一列", out.get(RecordConverter.VALUE));
+    Assert.assertEquals(Fixtures.TOPIC_NAME, out.getString(RecordConverter.TOPIC));
+  }
+
+  /** DEFAULT 模式同时看 key 与 value：任一侧为 NULL 只影响自己那一列。 */
+  @Test
+  public void defaultModeWritesOnlyTheNonNullSide() throws Exception {
+    TableSchema schema = Fixtures.schemaWithFixedColumns(
+        col(RecordConverter.KEY, STRING), col(RecordConverter.VALUE, STRING));
+    Record out = new ArrayRecord(schema);
+    new DefaultRecordConverter(Mode.DEFAULT).convert(sinkRecord("k", null), out);
+    Assert.assertEquals("k", out.getString(RecordConverter.KEY));
+    Assert.assertNull(out.get(RecordConverter.VALUE));
+  }
 }

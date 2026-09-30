@@ -44,7 +44,10 @@ public interface RecordConverter {
      * Convert {@link SinkRecord} to {@link Record}
      *
      * @param in  Record to convert
-     * @param out Converted record, reuse this object to avoid overhead
+     * @param out Converted record, reuse this object to avoid overhead. The sink clears every column of this
+     *            carrier before each call, so an implementation may leave a column untouched to mean "NULL"
+     *            (a tombstone record, or a field the payload does not carry); it must not rely on whatever the
+     *            previous record left behind.
      */
     void convert(SinkRecord in, Record out) throws IOException;
 }
