@@ -193,7 +193,8 @@ public class BufferedWriter {
         long totalBytes = 0;
         // 所有计数都必须在 reset() 之前取快照：原来 return 读的是已被清零的 processedRecords，
         // 落盘条数恒为 0（SinkStatusContext 的累计与 Total write 日志跟着一起失真）。
-        // dropped/reported 同理由本项新增，随 Status 结转后清零。
+        // dropped/reported 的结转与 preCommit 那句"写了多少条"都依赖这个顺序。
+        // PR #18 与本项在 flushAndReset() 上是同一处修复：先落的保留，rebase 后合成这一段。
         long flushedRecords = processedRecords;
         long flushedDropped = droppedRecords;
         long flushedReported = reportedRecords;
