@@ -203,3 +203,25 @@ mvn test -Pintegration-tests -Dtest=TestMaxComputeSinkConnectorIntegration
 - runtime.error.topic.name: 当connect内部写入某条数据发生未知错误时, 将错误记录写入Kafka消息队列中.默认为空
 - runtime.error.topic.bootstrap.servers: 与runtime.error.topic.name搭配使用, 错误消息写入Kafka的bootstrap servers地址
 - skip_error: 是否跳过发生未知写入错误的记录, 默认false不会跳过; 如果设置为true且未配置runtime.error.topic.name,则会丢弃错误记录的写入.
+
+## 坏数据与错误上报（skip_error / runtime.error.topic.*）
+
+一条记录写不进 MaxCompute 时（载荷解析失败、列类型不匹配、序列化超限……），连接器按配置走三条路之一。
+默认值下走第一条，行为与之前一致：
+
+| 配置组合 | 这条记录的去向 | 提交水位 |
+| --- | --- | --- |
+| `skip_error=false`（默认） | 异常抛给 Kafka Connect worker：task 失败或（配了 `errors.tolerance=all` 时）由平台的 DLQ 接管；位点不提交过这条，重启后重放 | 不越过这条 |
+| `skip_error=true` + `runtime.error.topic.name` + `runtime.error.topic.bootstrap.servers` | 原始记录被投递到错误 topic；投递失败会打 ERROR 日志（带来源 topic/partition/offset） | 越过这条（记录已有去处） |
+| `skip_error=true` 且未配置错误 topic | **丢弃**，并在任务日志里留下一条带 `topic-partition@offset` 的 ERROR | 越过这条（日志与计数都会说明） |
+
+要点：
+
+- 第三条路径以前是完全静默的：既没有日志也不计数，提交位点却已经前进，事后无法判断这段 offset 里有没有数据真正落盘。现在每条被丢弃的记录都会计入分区累计，并在 `preCommit` 的日志里与被提交的水位一起写出（`Total write ... skipped N records without an error destination` 出现在任务 flush/close 时）。仍建议要么配错误 topic，要么保持 `skip_error=false`。
+- 两条 DLQ 只能选一条：Kafka Connect 平台的 `errors.tolerance` / `errors.deadletterqueue.topic.name` 依赖 task 把异常抛出 `put()`；`skip_error=true` 时本连接器不抛，平台侧收不到任何记录。想用平台 DLQ 就保持 `skip_error=false`。
+- 错误 topic 里的载荷是文本化的原始 key/value：`String` 原样；`Struct`/`Map` 序列化成 JSON；`byte[]` 用 base64 并在 header `mc-connect-payload-encoding: base64` 标注；同时带 `mc-connect-error`（异常文本）、`mc-connect-origin-topic` / `-partition` / `-offset` 三个来源坐标 header，便于回溯是哪条记录被退回。
+- 复用的记录载体在每条转换前会被清空：`format=JSON` 遇到 value 为 NULL 的墓碑记录、`format=FLATTEN` 遇到 JSON 里缺失的字段时，对应列写 NULL，而不是沿用上一条记录的值（修复前会静默多出一行带着别的记录内容的数据）；`format=FLATTEN` 遇到显式的 JSON `null` 字段值也写成 NULL，不再把整条记录变成 `NullPointerException`。
+- 已知的输入边界（这些会报错并被上面三条策略之一处理，不会静默写入）：
+  - `format=CSV`：单个字段超过 100,000 字符会被随包的 CSV 解析器拒绝（`Maximum column length of 100,000 exceeded`）；字段数与表列数不一致直接报错；`\N` 表示该列为 NULL。
+  - `format=JSON`：载荷列需要是 MaxCompute 的 `JSON` 类型，写到 `STRING` 列会被类型校验拒绝；畸形 JSON 文本在写入载体时即被拒绝。
+  - BOOLEAN 列走 `Boolean.valueOf`：除 `"true"`（忽略大小写）外的一切文本都变成 `false` 且不报错，`1`/`yes` 亦然。这是历史行为，本版本未改动，需要严格校验请在写入前用 sink 转换器（`errors.tolerance` 或上游 SMT）处理。

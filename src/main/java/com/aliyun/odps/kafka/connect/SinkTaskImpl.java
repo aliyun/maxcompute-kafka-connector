@@ -165,6 +165,21 @@ public class SinkTaskImpl extends SinkTask {
             long consumedOffset = curStatus.flush();
             LOGGER.info("PreCommit Partition {}, currentOffset {}, localConsumedOffSet {}", partition,
                 offsetAndMetadata.offset(), consumedOffset + 1);
+            // 水位就要越过这些 offset 了：把"其中有多少条从未落盘"一起说出来，
+            // 否则一次提交把丢数证据抹平，事后只看位点无法判断这段区间到底写没写进去。
+            long dropped = curStatus.getDroppedRecords();
+            long reported = curStatus.getReportedRecords();
+            if (dropped > 0) {
+                LOGGER.warn("PreCommit Partition {}: committing offset {} moves past {} record(s) that were "
+                        + "never written to MaxCompute and never reported (skip_error=true with no "
+                        + "runtime.error.topic.* configured). Written records since this partition's writer "
+                        + "was created: {}, routed to the error topic: {}.",
+                    partition, consumedOffset + 1, dropped, curStatus.getProcessedRecords(), reported);
+            } else if (reported > 0 && LOGGER.isInfoEnabled()) {
+                LOGGER.info("PreCommit Partition {}: committing offset {} over {} record(s) routed to the "
+                        + "runtime error topic; written records since this partition's writer was created: {}",
+                    partition, consumedOffset + 1, reported, curStatus.getProcessedRecords());
+            }
 
             if (consumedOffset != -1) {
                 toCommitOffsets.put(partition, new OffsetAndMetadata(consumedOffset + 1, offsetAndMetadata.metadata()));
@@ -192,6 +207,11 @@ public class SinkTaskImpl extends SinkTask {
             System.currentTimeMillis() - startTimestamp);
 
         printProcess();
+        if (errorReporter != null) {
+            // 原来 producer 从不关闭：task 停止时还在内存里排队的错误记录会连数据一起丢，
+            // 那批"有去处"的记录其实哪儿也没去过。close() 会把它们发完再退出。
+            errorReporter.close();
+        }
     }
 
     @Override
@@ -206,11 +226,17 @@ public class SinkTaskImpl extends SinkTask {
     private void printProcess() {
         AtomicLong totalProcessedBytes = new AtomicLong();
         AtomicLong totalProcessedRecords = new AtomicLong();
+        AtomicLong totalDroppedRecords = new AtomicLong();
+        AtomicLong totalReportedRecords = new AtomicLong();
         sinkStatus.forEach((pt, cxt) -> {
             totalProcessedBytes.addAndGet(cxt.getProcessedBytes());
             totalProcessedRecords.addAndGet(cxt.getProcessedRecords());
+            totalDroppedRecords.addAndGet(cxt.getDroppedRecords());
+            totalReportedRecords.addAndGet(cxt.getReportedRecords());
         });
-        LOGGER.info("Total write {} bytes,{} records", totalProcessedBytes, totalProcessedRecords);
+        LOGGER.info("Total write {} bytes,{} records, skipped {} records without an error destination, "
+                + "reported {} records to the error topic",
+            totalProcessedBytes, totalProcessedRecords, totalDroppedRecords, totalReportedRecords);
     }
 
     @Override
