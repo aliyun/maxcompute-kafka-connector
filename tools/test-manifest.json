@@ -7,6 +7,7 @@
       "classes": [
         "com.aliyun.odps.kafka.connect.ConfigParameterTest",
         "com.aliyun.odps.kafka.connect.ConnectorConfigTest",
+        "com.aliyun.odps.kafka.connect.SinkTaskOffsetCommitRecoveryTest",
         "com.aliyun.odps.kafka.connect.converter.BinaryRecordConverterTest",
         "com.aliyun.odps.kafka.connect.converter.CsvRecordConverterTest",
         "com.aliyun.odps.kafka.connect.converter.DefaultRecordConverterTest",
@@ -15,7 +16,7 @@
         "com.aliyun.odps.kafka.connect.converter.RecordConverterBuilderTest",
         "com.aliyun.odps.kafka.connect.utils.ConverterHelperTest"
       ],
-      "min_tests": 60
+      "min_tests": 69
     },
     "integration": {
       "classes": [

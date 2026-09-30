@@ -127,9 +127,7 @@ public class SinkTaskImpl extends SinkTask {
             TopicPartition partition = new TopicPartition(r.topic(), r.kafkaPartition());
             SinkStatusContext sinkStatusContext = sinkStatus.get(partition);
             if (sinkStatusContext == null) {
-                BufferedWriter writer = new BufferedWriter(this.odps, config, project, table, recordConverter,
-                    errorReporter);
-                sinkStatusContext = new SinkStatusContext(writer);
+                sinkStatusContext = new SinkStatusContext(newBufferedWriter());
                 sinkStatus.put(partition, sinkStatusContext);
             }
             reachBufferLimit |= sinkStatusContext.putRecord(r);
@@ -179,6 +177,15 @@ public class SinkTaskImpl extends SinkTask {
         }
 
         return toCommitOffsets;
+    }
+
+    /**
+     * 为一个 Kafka 分区创建写入器。默认实现与原先的内联 new 完全一致；独立出来只为让用例能在
+     * 不连接 MaxCompute 的情况下驱动 put() / preCommit() 的故障路径
+     * （见 SinkTaskOffsetCommitRecoveryTest）。
+     */
+    protected BufferedWriter newBufferedWriter() {
+        return new BufferedWriter(this.odps, config, project, table, recordConverter, errorReporter);
     }
 
     @Override

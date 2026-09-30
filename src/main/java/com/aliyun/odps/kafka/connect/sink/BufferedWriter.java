@@ -114,6 +114,13 @@ public class BufferedWriter {
         return streamPack.getDataSize() >= bufferLimitBytes;
     }
 
+    /**
+     * 自上次成功落盘以来是否还有未持久化的记录。调用方据此判断丢弃该 writer 是否等于丢数据。
+     */
+    public synchronized boolean hasPendingData() {
+        return processedRecords > 0;
+    }
+
     public synchronized Status flushAndReset() {
         long totalBytes = 0;
         if (streamSession != null && streamPack != null) {
