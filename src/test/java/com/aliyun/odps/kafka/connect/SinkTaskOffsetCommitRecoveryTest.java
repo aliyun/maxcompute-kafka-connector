@@ -219,6 +219,33 @@ public class SinkTaskOffsetCommitRecoveryTest {
   }
 
   /**
+   * cooperative 重平衡时，保留分区的落盘失败必须原样抛出（让 worker 杀掉 task）：位点还没提交，
+   * 记录会重放；而 flush 失败过的 stream pack 之后拒绝继续 append，吞掉异常继续持有这座 writer
+   * 会让该分区永久卡死，最终连"提交水位不越过持久数据"都保不住。
+   */
+  @Test
+  public void failedFlushAtRebalanceFailsTaskInsteadOfKeepingUnusableWriter() {
+    FakeSink sink = new FakeSink();
+    FakeWorker worker = new WorkerBuilder(sink).withTaskPartitions(0).build();
+
+    worker.deliver(0, 0, 5);
+    worker.failNextFlushOn(0);
+    expectThrows(RuntimeException.class, () -> worker.gainPartitionCooperatively(1));
+
+    Assert.assertEquals("抛出前不得推进任何水位", 0L, worker.committed(0));
+    Assert.assertEquals("这批记录没有落盘", 0, sink.writesOf(0));
+
+    // task 重启后从已提交位点重放，故障已恢复：数据完整落盘且不重复
+    worker.expectTaskFailureAndRestart();
+    worker.clearFaults();
+    worker.deliver(0, 0, 5);
+    Assert.assertTrue(worker.commit());
+    Assert.assertEquals(5L, worker.committed(0));
+    sink.assertInvariants(worker);
+    sink.assertDuplicates(0, 0);
+  }
+
+  /**
    * 分区 lost（无法提交）时只需释放状态：记录会由新持有者从已提交位点重放，此处再落盘只会制造重复。
    */
   @Test

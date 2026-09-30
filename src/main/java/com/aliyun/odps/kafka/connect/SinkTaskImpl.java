@@ -134,21 +134,24 @@ public class SinkTaskImpl extends SinkTask {
                 continue;
             }
 
-            boolean flushed = status.tryFlushForRelease();
             if (assigned == null || assigned.contains(partition)) {
-                // 仍归本 task：位点不会回退，状态必须保留。落盘成功后由下一次 preCommit 正常推进水位；
-                // 落盘失败则把缓冲区留给下一次 preCommit 重试，绝不丢弃已消费的记录。
-                if (!flushed) {
-                    LOGGER.error("Thread({}) open(): keep {} because buffered records are not persisted yet,"
-                        + " will retry at the next preCommit", Thread.currentThread().getId(), partition);
-                }
+                // 仍归本 task：位点不会回退、记录也不会重放，必须先落盘；成功后保留状态，
+                // 水位由下一次 preCommit 正常推进。落盘失败则原样抛出，让本次重平衡失败、task 重启：
+                // 那时位点还没提交，记录会重放；而 flush 失败过的 stream pack 已经拒绝继续 append
+                // （SDK 接口自带的报错原话是 There's an unsuccessful flush called），留着它只会让
+                // 这个分区永久卡死，所以这里不能吞异常。
+                status.flushForRelease();
                 continue;
             }
 
-            if (!flushed) {
-                LOGGER.warn("Thread({}) open(): dropping unpersisted records of {}; this partition is no longer"
-                    + " assigned to this task, so its new owner re-reads it from the last committed offset",
-                    Thread.currentThread().getId(), partition);
+            // 既不在本次分配里、也不再属于本 task（历史遗留或 worker 没回调 close 的情况）：
+            // worker 会把这些分区的位点重置回已提交位置，记录由新持有者重放，这里只回收状态。
+            try {
+                status.flushForRelease();
+            } catch (RuntimeException e) {
+                LOGGER.warn("Thread({}) open(): releasing {} whose buffered records could not be persisted;"
+                    + " its new owner re-reads it from the last committed offset",
+                    Thread.currentThread().getId(), partition, e);
             }
             release(status);
             entries.remove();

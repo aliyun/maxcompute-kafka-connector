@@ -4,12 +4,8 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import com.aliyun.odps.kafka.connect.sink.BufferedWriter;
 import org.apache.kafka.connect.sink.SinkRecord;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 public class SinkStatusContext {
-    private static final Logger LOGGER = LoggerFactory.getLogger(SinkStatusContext.class);
-
     private final BufferedWriter writer;
     private final AtomicLong processedBytes; // 当前分区写入mc的字节数
     private final AtomicLong processedRecords;
@@ -25,23 +21,19 @@ public class SinkStatusContext {
     }
 
     /**
-     * 尝试把缓冲落盘，以便安全释放该分区的写入状态。
+     * 为"释放或继续持有该分区状态"这一步把缓冲落盘。
      *
-     * @return true 表示已经没有未持久化的记录（状态可以丢弃）；false 表示落盘失败、缓冲区仍完整保留，
-     *         调用方要么继续持有该状态、交给下一次 preCommit 重试，要么确认这些记录会被重新投递。
+     * <p>没有未持久化数据时直接返回（不去碰 tunnel，也不做无谓的网络 flush）；
+     * 有数据且落盘成功时返回；落盘失败则把异常原样上抛——调用方不能把这座 writer 留在内存里继续用：
+     * tunnel 的 stream pack 一旦 flush 失败就拒绝再 append（接口自带的报错原话是"There's an unsuccessful
+     * flush called..."），留着它等于让这个分区永久卡死。抛出去由 worker 杀掉 task，位点没提交，
+     * 记录会重放。
      */
-    public boolean tryFlushForRelease() {
+    public void flushForRelease() {
         if (!writer.hasPendingData()) {
-            return true;
+            return;
         }
-        try {
-            flush();
-            return true;
-        } catch (RuntimeException e) {
-            LOGGER.warn("Thread({}) failed to flush buffered records while releasing partition state",
-                Thread.currentThread().getId(), e);
-            return false;
-        }
+        flush();
     }
 
     public boolean hasPendingData() {
