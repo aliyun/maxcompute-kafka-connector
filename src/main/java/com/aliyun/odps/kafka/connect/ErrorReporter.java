@@ -131,12 +131,19 @@ class ErrorReporter implements ErrantRecordReporter {
         return String.valueOf(payload);
     }
 
-    /** 关闭生产者：task 停止时把还在内存里排队的错误记录发出去，否则它们连同数据一起被丢掉。 */
+    /** 关闭生产者的最长等待：宁可留下一条 WARN，也不能让 Connect 关停 task 时挂在这里。 */
+    static final java.time.Duration CLOSE_TIMEOUT = java.time.Duration.ofSeconds(30);
+
+    /**
+     * 关闭生产者：task 停止时把还在内存里排队的错误记录发出去，否则它们连同数据一起被丢掉。
+     * 带超时（KafkaProducer.close() 无参版本会一直等发送线程收尾，broker 不可达时会拖住 task 关停）。
+     */
     void close() {
         try {
-            producer.close();
+            producer.close(CLOSE_TIMEOUT);
         } catch (RuntimeException e) {
-            LOGGER.warn("Failed to close the runtime error topic producer cleanly", e);
+            LOGGER.warn("Closing the runtime error topic producer did not finish within {}; some rejected"
+                + " records may never have reached error topic {}", CLOSE_TIMEOUT, topic, e);
         }
     }
 }
