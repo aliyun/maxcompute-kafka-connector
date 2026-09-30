@@ -14,9 +14,11 @@
         "com.aliyun.odps.kafka.connect.converter.FlattenRecordConverterTest",
         "com.aliyun.odps.kafka.connect.converter.JsonRecordConverterTest",
         "com.aliyun.odps.kafka.connect.converter.RecordConverterBuilderTest",
-        "com.aliyun.odps.kafka.connect.utils.ConverterHelperTest"
+        "com.aliyun.odps.kafka.connect.utils.ConverterHelperTest",
+        "com.aliyun.odps.kafka.connect.ErrorReporterTest",
+        "com.aliyun.odps.kafka.connect.sink.BufferedWriterRecordErrorPolicyTest"
       ],
-      "min_tests": 70
+      "min_tests": 98
     },
     "integration": {
       "classes": [
