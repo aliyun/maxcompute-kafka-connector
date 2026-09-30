@@ -224,6 +224,27 @@ public class BufferedWriterRecordErrorPolicyTest {
     Assert.assertEquals("x", pack.appended.get(0)[FLATTEN_NAME_COL]);
   }
 
+  /**
+   * 落盘条数必须在 flush 之后仍然可读：{@code reset()} 会清零 processedRecords，
+   * 原来 {@code flushAndReset()} 在 reset 之后才读它，于是交给 SinkStatusContext 结转的条数恒为 0，
+   * "Total write ... records" 与 preCommit 那句"写了多少条"一起失真（真实服务端跑出来的现象）。
+   */
+  @Test
+  public void flushedRecordCountSurvivesTheReset() {
+    FakePack pack = new FakePack();
+    BufferedWriter writer = writer(false, null, pack, new JsonRecordConverter(Mode.VALUE));
+
+    writer.write(sinkRecord(1L, null, "{\"a\":1}"));
+    writer.write(sinkRecord(2L, null, "{\"a\":2}"));
+    Assert.assertEquals(2L, writer.flushAndReset().getProcessedRecords());
+
+    // 结转是一次性的：下一次 flush 只报这一段新落的条数
+    writer.write(sinkRecord(3L, null, "{\"a\":3}"));
+    SinkStatusContext.Status second = writer.flushAndReset();
+    Assert.assertEquals(1L, second.getProcessedRecords());
+    Assert.assertEquals(3L, second.getMaxOffset());
+  }
+
   /** 丢弃/上报计数一次性结转：一次 flush 交给调用方之后，下一次 flush 只说这一段的事。 */
   @Test
   public void dropCountersAreHandedOffOncePerFlush() {
