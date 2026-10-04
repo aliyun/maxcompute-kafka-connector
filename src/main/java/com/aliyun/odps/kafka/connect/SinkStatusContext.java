@@ -20,6 +20,26 @@ public class SinkStatusContext {
         return writer.write(record);
     }
 
+    /**
+     * 为"释放或继续持有该分区状态"这一步把缓冲落盘。
+     *
+     * <p>没有未持久化数据时直接返回（不去碰 tunnel，也不做无谓的网络 flush）；
+     * 有数据且落盘成功时返回；落盘失败则把异常原样上抛——调用方不能把这座 writer 留在内存里继续用：
+     * tunnel 的 stream pack 一旦 flush 失败就拒绝再 append（接口自带的报错原话是"There's an unsuccessful
+     * flush called..."），留着它等于让这个分区永久卡死。抛出去由 worker 杀掉 task，位点没提交，
+     * 记录会重放。
+     */
+    public void flushForRelease() {
+        if (!writer.hasPendingData()) {
+            return;
+        }
+        flush();
+    }
+
+    public boolean hasPendingData() {
+        return writer.hasPendingData();
+    }
+
     public long flush() {
         Status status = writer.flushAndReset();
         processedBytes.addAndGet(status.getProcessedBytes());

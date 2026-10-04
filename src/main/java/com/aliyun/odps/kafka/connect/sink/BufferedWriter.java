@@ -114,8 +114,18 @@ public class BufferedWriter {
         return streamPack.getDataSize() >= bufferLimitBytes;
     }
 
+    /**
+     * 自上次成功落盘以来是否还有未持久化的记录。调用方据此判断丢弃该 writer 是否等于丢数据。
+     */
+    public synchronized boolean hasPendingData() {
+        return processedRecords > 0;
+    }
+
     public synchronized Status flushAndReset() {
         long totalBytes = 0;
+        // 必须在 reset() 之前取快照：原来 return 读的是已被 reset 清零的字段，
+        // 落盘条数恒为 0（SinkStatusContext 的累计与 Total write 日志跟着一起失真）。
+        long flushedRecords = processedRecords;
         if (streamSession != null && streamPack != null) {
             totalBytes = streamPack.getDataSize();
             try {
@@ -127,7 +137,7 @@ public class BufferedWriter {
             }
             reset();
         }
-        return new Status(maxOffset, processedRecords, totalBytes);
+        return new Status(maxOffset, flushedRecords, totalBytes);
     }
 
     private void reset() {
