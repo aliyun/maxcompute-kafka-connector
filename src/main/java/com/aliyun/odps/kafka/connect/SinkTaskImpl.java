@@ -254,6 +254,16 @@ public class SinkTaskImpl extends SinkTask {
                     partition, consumedOffset + 1, reported, curStatus.getProcessedRecords());
             }
 
+            long held = curStatus.getUnconfirmedReportedRecords();
+            if (held > 0) {
+                // 水位为什么没推满是外面看得见的唯一线索：不说清楚，一次"成功"的提交其实什么都没推进。
+                LOGGER.warn("PreCommit Partition {}: committing offset {} but {} record(s) routed to the "
+                        + "runtime error topic still have no confirmed delivery, so the watermark is held "
+                        + "before offset {}; records written above it will be re-delivered and may be written "
+                        + "again.",
+                    partition, consumedOffset + 1, held, curStatus.getHeldAtOffset());
+            }
+
             if (consumedOffset != -1) {
                 toCommitOffsets.put(partition, new OffsetAndMetadata(consumedOffset + 1, offsetAndMetadata.metadata()));
                 if (LOGGER.isDebugEnabled()) {
