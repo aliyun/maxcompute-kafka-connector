@@ -301,6 +301,32 @@ public class SinkTaskOffsetCommitRecoveryTest {
     Assert.assertEquals("达到缓冲阈值应请求提交一次", 1, worker.context().requestCommitCalls);
   }
 
+  /**
+   * 评审点名的路径在 task 层的等价断言：一条转投错误 topic 的记录在提交前没拿到投递凭据时，
+   * {@code preCommit} 提交的水位必须停在它之前。代价是它之上已经落盘的记录会被重写一次 ——
+   * 本连接器本来就是 at-least-once，这个重复有界且可查；而未确认的记录被提交过去就是永久丢数。
+   */
+  @Test
+  public void unconfirmedErrorDeliveryHoldsTheCommittedOffsetAndReplaysFromThere() {
+    FakeSink sink = new FakeSink();
+    FakeWorker worker = new WorkerBuilder(sink).withTaskPartitions(0).build();
+
+    worker.deliver(0, 0, 5);              // offset 0..4
+    worker.holdErrorReportFrom(0, 3L);    // 其中 3 号转投错误 topic，投递未确认
+
+    Assert.assertTrue(worker.commit());
+    Assert.assertEquals("水位必须停在未确认的记录之前", 3L, worker.committed(0));
+
+    worker.clearFaults();                 // 补投并确认
+    worker.expectTaskFailureAndRestart(); // 重放从已提交位点开始
+    worker.deliver(0, 3, 2);              // 3、4 再来一遍
+    Assert.assertTrue(worker.commit());
+    Assert.assertEquals(5L, worker.committed(0));
+
+    sink.assertInvariants(worker);
+    sink.assertDuplicates(0, 2);          // 挡住一条记录的代价是它上面两条重复落盘，不是丢数据
+  }
+
   // ------------------------------------------------------ 模拟器与替身
 
   private static void expectThrows(Class<? extends Throwable> expected, Runnable body) {
@@ -320,6 +346,8 @@ public class SinkTaskOffsetCommitRecoveryTest {
     boolean failFlushAfterPersist;
     /** <=0 表示不触发；否则缓冲达到该条数时 write() 返回 true（模拟 buffer 超阈值）。 */
     int recordsPerCommitTrigger;
+    /** >=0 表示这条记录投给错误 topic 后还没有拿到投递凭据，水位必须停在它之前；-1 表示没有。 */
+    long holdFromOffset = -1;
   }
 
   /** 假 MaxCompute：只记录每个 offset 被落盘了几次，用于校验水位、丢失与重复。 */
@@ -517,6 +545,13 @@ public class SinkTaskOffsetCommitRecoveryTest {
         // 服务端已收下数据但客户端看到失败：靠重放产生重复，而不是靠提交赌它成功
         throw new RuntimeException("injected: flush reported failure after persisting");
       }
+      if (behavior.holdFromOffset >= 0) {
+        // 与真实实现同构：数据已经落盘，但转投错误 topic 的那条记录没有投递凭据，水位只能停在它之前
+        // （对应 BufferedWriter.flushAndReset() 里的 settlePendingReports() + clamp）。
+        long heldAt = behavior.holdFromOffset;
+        return new SinkStatusContext.Status(Math.min(maxOffset, heldAt - 1), records, records * 8L,
+                                            0L, 1L, 1L, heldAt);
+      }
       return new SinkStatusContext.Status(maxOffset, records, records * 8L);
     }
 
@@ -612,6 +647,11 @@ public class SinkTaskOffsetCommitRecoveryTest {
       behavior(new TopicPartition(TOPIC, partition)).recordsPerCommitTrigger = records;
     }
 
+    /** 模拟"转投错误 topic 的那条记录尚未确认投递"：writer 必须把水位停在它之前。 */
+    void holdErrorReportFrom(int partition, long offset) {
+      behavior(new TopicPartition(TOPIC, partition)).holdFromOffset = offset;
+    }
+
     private Behavior behavior(TopicPartition tp) {
       Behavior behavior = behaviors.get(tp);
       if (behavior == null) {
@@ -626,6 +666,7 @@ public class SinkTaskOffsetCommitRecoveryTest {
         behavior.failNextWrite = false;
         behavior.failNextFlush = false;
         behavior.failFlushAfterPersist = false;
+        behavior.holdFromOffset = -1;
       }
     }
 

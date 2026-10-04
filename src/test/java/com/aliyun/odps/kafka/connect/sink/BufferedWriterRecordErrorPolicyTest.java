@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
 
 import com.aliyun.odps.Odps;
@@ -261,6 +262,119 @@ public class BufferedWriterRecordErrorPolicyTest {
     Assert.assertEquals(3L, second.getMaxOffset());
   }
 
+  /**
+   * 评审点名的那条时间线：坏记录被交给错误 topic，投递是异步的，broker 在 commit 之前拒收。
+   *
+   * <p>修复前 {@code handleFailedRecord()} 在入队那一刻就记为"有去处"，水位照样越过这条 offset：
+   * 记录既不在 MaxCompute（转换失败没写进去），也不在错误 topic（投递被拒），而已提交的位点让它
+   * 无法重放。现在水位停在它之前，并且下一次 flush 会重投一次。
+   */
+  @Test
+  public void asyncDeliveryFailureHoldsWatermarkBeforeTheRecord() {
+    FakePack pack = new FakePack();
+    DeferredReporter reporter = new DeferredReporter();
+    BufferedWriter writer = writer(true, reporter, pack, new ThrowingConverter());
+    writer.setReportSettleTimeoutMs(50L);
+
+    writer.write(sinkRecord(7L, null, "junk"));
+    // 异步的结局在 commit 之前揭晓：broker 拒收了这一次投递
+    reporter.settle(0, new IllegalStateException("broker rejected the batch"));
+
+    SinkStatusContext.Status held = writer.flushAndReset();
+    Assert.assertEquals("未确认的记录是本次唯一的记录，水位不能越过它", 6L, held.getMaxOffset());
+    Assert.assertEquals(1L, held.getUnconfirmedReportedRecords());
+    Assert.assertEquals("水位被挡在这条记录之前", 7L, held.getHeldAtOffset());
+    Assert.assertEquals("投递被拒后应重投一次", 2, reporter.reports());
+
+    // 重投成功之后，水位才允许越过它
+    reporter.settle(1, null);
+    SinkStatusContext.Status released = writer.flushAndReset();
+    Assert.assertEquals(7L, released.getMaxOffset());
+    Assert.assertEquals(0L, released.getUnconfirmedReportedRecords());
+    Assert.assertEquals(-1L, released.getHeldAtOffset());
+  }
+
+  /** 还在途（没有最终结局）同样不算送达：不能靠"没报错"就把位点推过去。 */
+  @Test
+  public void inFlightDeliveryHoldsWatermarkUntilItCompletes() {
+    FakePack pack = new FakePack();
+    DeferredReporter reporter = new DeferredReporter();
+    BufferedWriter writer = writer(true, reporter, pack, new ThrowingConverter());
+    writer.setReportSettleTimeoutMs(50L);
+
+    writer.write(sinkRecord(4L, null, "junk"));
+    SinkStatusContext.Status held = writer.flushAndReset();
+    Assert.assertEquals(3L, held.getMaxOffset());
+    Assert.assertEquals("还在途的记录不重投，否则一份数据在 DLQ 里出现两次", 1, reporter.reports());
+
+    reporter.settle(0, null);
+    Assert.assertEquals(4L, writer.flushAndReset().getMaxOffset());
+  }
+
+  /** 投递被拒之后的重投又被拒：继续挡着，并且不无限重投（每次 flush 最多补投一次）。 */
+  @Test
+  public void repeatedlyFailedDeliveryKeepsHoldingWithoutUnboundedRetries() {
+    FakePack pack = new FakePack();
+    DeferredReporter reporter = new DeferredReporter();
+    BufferedWriter writer = writer(true, reporter, pack, new ThrowingConverter());
+    writer.setReportSettleTimeoutMs(50L);
+
+    writer.write(sinkRecord(2L, null, "junk"));
+    reporter.settle(0, new IllegalStateException("broker rejected the batch"));
+    SinkStatusContext.Status first = writer.flushAndReset();
+    Assert.assertEquals(1L, first.getMaxOffset());
+    Assert.assertEquals(2, reporter.reports());
+
+    // 补投又被拒：水位继续挡着，但不再每轮 flush 都重投
+    reporter.settle(1, new IllegalStateException("broker still rejecting"));
+    SinkStatusContext.Status again = writer.flushAndReset();
+    Assert.assertEquals(1L, again.getMaxOffset());
+    Assert.assertEquals("补投只到第二次为止，之后交给位点不推进 + 日志，而不是每轮再试", 2, reporter.reports());
+
+    // 已经补投过一次的记录不会每轮 flush 都重投，位点则一直停在它前面
+    writer.flushAndReset();
+    Assert.assertEquals(2, reporter.reports());
+  }
+
+  /** 上报通道没交出任何投递凭据（返回 null）：这等价于"不知道去哪了"，不能算有去处。 */
+  @Test
+  public void reporterWithoutDeliveryHandleHoldsWatermark() {
+    FakePack pack = new FakePack();
+    BufferedWriter writer = writer(true, new HandlelessReporter(), pack, new ThrowingConverter());
+    writer.setReportSettleTimeoutMs(50L);
+
+    writer.write(sinkRecord(8L, null, "junk"));
+    SinkStatusContext.Status status = writer.flushAndReset();
+    Assert.assertEquals(7L, status.getMaxOffset());
+    Assert.assertEquals(1L, status.getUnconfirmedReportedRecords());
+  }
+
+  /**
+   * 挡水位不是把整个窗口扣住：它下面已经落盘的记录照旧提交，只有从被挡那条开始重放。
+   * 重放会让上面已落盘的记录再写一次（本连接器本来就是 at-least-once），这比静默丢数好。
+   */
+  @Test
+  public void recordsBelowTheHeldOneStillAdvance() {
+    FakePack pack = new FakePack();
+    DeferredReporter reporter = new DeferredReporter();
+    BufferedWriter writer = writer(true, reporter, pack, new JsonRecordConverter(Mode.VALUE));
+    writer.setReportSettleTimeoutMs(50L);
+
+    writer.write(sinkRecord(10L, null, "{\"a\":1}"));
+    writer.write(sinkRecord(11L, null, "not json"));
+    writer.write(sinkRecord(12L, null, "{\"a\":3}"));
+
+    SinkStatusContext.Status status = writer.flushAndReset();
+    Assert.assertEquals("10 已经落盘，可以提交到它之后", 10L, status.getMaxOffset());
+    Assert.assertEquals(11L, status.getHeldAtOffset());
+    Assert.assertEquals("落盘的条数只算真写进去的两条", 2L, status.getProcessedRecords());
+    Assert.assertEquals("只有两条真写进了 record pack", 2, pack.appended.size());
+
+    reporter.settle(0, null);
+    SinkStatusContext.Status released = writer.flushAndReset();
+    Assert.assertEquals("补投确认后水位一次推到本窗口最高", 12L, released.getMaxOffset());
+  }
+
   // ------------------------------------------------------------------ 替身
 
   private static BufferedWriter writer(boolean skipError, ErrantRecordReporter reporter, FakePack pack,
@@ -428,12 +542,63 @@ public class BufferedWriterRecordErrorPolicyTest {
     }
   }
 
+  /**
+   * 确认投递的上报通道：返回一个已完成且不带异常的 Future，等价于"这条记录已经落到错误 topic"。
+   *
+   * <p>修复前它可以返回 null 也照样被当作"有去处"。现在没有投递凭据就不算送达（见
+   * {@link #reporterWithoutDeliveryHandleHoldsWatermark()}），所以这个替身必须交出凭据。
+   */
   private static final class RecordingReporter implements ErrantRecordReporter {
     private final List<SinkRecord> reported = new ArrayList<SinkRecord>();
 
     @Override
     public Future<Void> report(SinkRecord record, Throwable error) {
       reported.add(record);
+      return completedDelivery();
+    }
+  }
+
+  private static Future<Void> completedDelivery() {
+    CompletableFuture<Void> delivered = new CompletableFuture<Void>();
+    delivered.complete(null);
+    return delivered;
+  }
+
+  /**
+   * 可以事后决定成败的上报通道：{@code report()} 先返回一个未完成的 Future，测试再决定 broker 是
+   * 收下还是拒收 —— 这正是评审指出的那条时间线（异步投递的结局在 commit 之前才揭晓）。
+   */
+  private static final class DeferredReporter implements ErrantRecordReporter {
+    private final List<SinkRecord> reported = new ArrayList<SinkRecord>();
+    private final List<CompletableFuture<Void>> deliveries = new ArrayList<CompletableFuture<Void>>();
+
+    @Override
+    public Future<Void> report(SinkRecord record, Throwable error) {
+      reported.add(record);
+      CompletableFuture<Void> delivery = new CompletableFuture<Void>();
+      deliveries.add(delivery);
+      return delivery;
+    }
+
+    /** 第 index 次上报的最终结局。 */
+    private void settle(int index, Throwable failure) {
+      CompletableFuture<Void> delivery = deliveries.get(index);
+      if (failure == null) {
+        delivery.complete(null);
+      } else {
+        delivery.completeExceptionally(failure);
+      }
+    }
+
+    private int reports() {
+      return reported.size();
+    }
+  }
+
+  /** 交出 null 的上报通道：调用方拿不到任何投递凭据。 */
+  private static final class HandlelessReporter implements ErrantRecordReporter {
+    @Override
+    public Future<Void> report(SinkRecord record, Throwable error) {
       return null;
     }
   }
