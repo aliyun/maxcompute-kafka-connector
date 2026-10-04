@@ -16,7 +16,7 @@
         "com.aliyun.odps.kafka.connect.converter.RecordConverterBuilderTest",
         "com.aliyun.odps.kafka.connect.utils.ConverterHelperTest"
       ],
-      "min_tests": 70
+      "min_tests": 74
     },
     "integration": {
       "classes": [

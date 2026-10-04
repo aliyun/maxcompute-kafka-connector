@@ -55,6 +55,9 @@ public class ConverterHelper {
         rec.setTimestampAsInstant(idx, instant);
         break;
       case BOOLEAN:
+        if (!"true".equalsIgnoreCase(value) && !"false".equalsIgnoreCase(value)) {
+          throw new IllegalArgumentException("Invalid BOOLEAN value; expected true or false");
+        }
         rec.setBoolean(idx, Boolean.valueOf(value));
         break;
       case DATETIME:

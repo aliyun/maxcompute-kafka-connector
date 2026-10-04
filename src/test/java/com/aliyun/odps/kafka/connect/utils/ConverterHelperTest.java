@@ -68,6 +68,32 @@ public class ConverterHelperTest {
   }
 
   @Test
+  public void acceptsOnlyBooleanTokensAndPreservesNull() throws Exception {
+    ArrayRecord rec = recordWith(BOOLEAN);
+    for (String value : new String[] {"true", "TRUE", "TrUe", "false", "FALSE", "FaLsE"}) {
+      ConverterHelper.setRecordByType(rec, 0, value);
+      Assert.assertEquals(Boolean.valueOf(value), rec.getBoolean(0));
+    }
+    ConverterHelper.setRecordByType(rec, 0, null);
+    Assert.assertTrue(rec.isNull(0));
+  }
+
+  @Test
+  public void rejectsMalformedBooleanWithoutChangingColumn() throws Exception {
+    ArrayRecord rec = recordWith(BOOLEAN);
+    for (String value : new String[] {"tru", "yes", "1", "0", "", " true", "false "}) {
+      rec.setBoolean(0, true);
+      try {
+        ConverterHelper.setRecordByType(rec, 0, value);
+        Assert.fail("Malformed BOOLEAN must fail instead of becoming false: " + value);
+      } catch (IllegalArgumentException expected) {
+        Assert.assertTrue(expected.getMessage().contains("BOOLEAN"));
+        Assert.assertEquals(Boolean.TRUE, rec.getBoolean(0));
+      }
+    }
+  }
+
+  @Test
   public void mapsDate() throws Exception {
     ArrayRecord rec = recordWith(DATE);
     ConverterHelper.setRecordByType(rec, 0, "2023-01-02");

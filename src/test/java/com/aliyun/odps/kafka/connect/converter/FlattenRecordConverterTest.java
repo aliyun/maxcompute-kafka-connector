@@ -108,4 +108,8 @@ public class FlattenRecordConverterTest {
       Assert.assertTrue(e.getMessage(), e.getMessage().contains("Unsupported mode for FlattenConverter"));
     }
   }
+  @Test(expected = IllegalArgumentException.class)
+  public void malformedBooleanFailsConversion() throws Exception {
+    converter().convert(sinkRecord(null, "{\"is_fired\":\"tru\"}"), newRecord());
+  }
 }

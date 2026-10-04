@@ -94,4 +94,11 @@ public class CsvRecordConverterTest {
                               e.getMessage().contains("Unsupported mode for CsvConverter"));
         }
     }
+    @Test(expected = IOException.class)
+    public void malformedBooleanFailsConversion() throws IOException {
+        TableSchema schema = Fixtures.schemaWithFixedColumns(
+            col("active", com.aliyun.odps.type.TypeInfoFactory.BOOLEAN));
+        new CsvRecordConverter(schema, Mode.VALUE, ",").convert(
+            sinkRecord(null, "tru"), new ArrayRecord(schema));
+    }
 }
