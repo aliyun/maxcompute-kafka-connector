@@ -311,31 +311,73 @@ public class BufferedWriterRecordErrorPolicyTest {
     Assert.assertEquals(4L, writer.flushAndReset().getMaxOffset());
   }
 
-  /** 投递被拒之后的重投又被拒：继续挡着，并且不无限重投（每次 flush 最多补投一次）。 */
+  /**
+   * 投递被判定失败之后必须**一直重投到有确认结果为止**，否则一次瞬时故障就把这个分区的位点永久卡死。
+   *
+   * <p>真实 broker 上跑出来的原始缺陷：DLQ topic 的 max.message.bytes 太小时每条坏记录都被拒收，
+   * 水位正确地停在它前面；把 topic 配置修好之后，"只补投一次"的实现再也不解锁 ——
+   * committed 停在 1、DLQ 里 0 条，除非重启 task。所以这里钉三件事：
+   * 第一次失败立刻补投；之后再失败按退避重投（退避没到不重投，避免堆积）；
+   * 某一次补投被确认之后，水位立刻解除。
+   */
   @Test
-  public void repeatedlyFailedDeliveryKeepsHoldingWithoutUnboundedRetries() {
+  public void definitivelyFailedDeliveryKeepsBeingReAttemptedUntilConfirmed() {
     FakePack pack = new FakePack();
     DeferredReporter reporter = new DeferredReporter();
     BufferedWriter writer = writer(true, reporter, pack, new ThrowingConverter());
     writer.setReportSettleTimeoutMs(50L);
+    MutableClock clock = new MutableClock(1_000L);
+    writer.setClockForTest(clock);
 
     writer.write(sinkRecord(2L, null, "junk"));
+    Assert.assertEquals(1, reporter.reports());
+
+    // 第一次结局：broker 拒收 → 本轮立刻补投一次，水位仍然挡着
     reporter.settle(0, new IllegalStateException("broker rejected the batch"));
     SinkStatusContext.Status first = writer.flushAndReset();
-    Assert.assertEquals(1L, first.getMaxOffset());
     Assert.assertEquals(2, reporter.reports());
+    Assert.assertEquals(1L, first.getMaxOffset());
+    Assert.assertEquals(1L, first.getUnconfirmedReportedRecords());
 
-    // 补投又被拒：水位继续挡着，但不再每轮 flush 都重投
+    // 第二次结局：还是被拒 → 不再立刻重投，改为退避排队
     reporter.settle(1, new IllegalStateException("broker still rejecting"));
-    SinkStatusContext.Status again = writer.flushAndReset();
-    Assert.assertEquals(1L, again.getMaxOffset());
-    Assert.assertEquals("补投只到第二次为止，之后交给位点不推进 + 日志，而不是每轮再试", 2, reporter.reports());
+    SinkStatusContext.Status second = writer.flushAndReset();
+    Assert.assertEquals("退避没到期之前不得再投一次", 2, reporter.reports());
+    Assert.assertEquals(1L, second.getMaxOffset());
 
-    // 已经补投过一次的记录不会每轮 flush 都重投，位点则一直停在它前面
+    // 退避未到期：继续等，不重投，也继续挡水位
+    clock.advance(999L);
     writer.flushAndReset();
     Assert.assertEquals(2, reporter.reports());
+
+    // 退避到期：第三次投出去；结局未知之前仍然挡着
+    clock.advance(1L);
+    SinkStatusContext.Status third = writer.flushAndReset();
+    Assert.assertEquals(3, reporter.reports());
+    Assert.assertEquals(1L, third.getMaxOffset());
+
+    // 这一次被确认 → 解除阻塞，水位推到本窗口最高
+    reporter.settle(2, null);
+    SinkStatusContext.Status released = writer.flushAndReset();
+    Assert.assertEquals(2L, released.getMaxOffset());
+    Assert.assertEquals(0L, released.getUnconfirmedReportedRecords());
+    Assert.assertEquals(-1L, released.getHeldAtOffset());
   }
 
+  /** 退避必须封顶：DLQ 长时间不可用时，一个分区里的待确认记录不能每轮 flush 都集体重投。 */
+  @Test
+  public void reAttemptBackoffGrowsAndIsCapped() {
+    Assert.assertEquals("第一次失败允许立刻补投", 0L, BufferedWriter.retryDelayAfterFailure(2));
+    Assert.assertEquals(1_000L, BufferedWriter.retryDelayAfterFailure(3));
+    Assert.assertEquals(2_000L, BufferedWriter.retryDelayAfterFailure(4));
+    Assert.assertEquals(4_000L, BufferedWriter.retryDelayAfterFailure(5));
+    Assert.assertEquals(BufferedWriter.RETRY_BACKOFF_CAP_MS,
+                        BufferedWriter.retryDelayAfterFailure(20));
+    Assert.assertEquals(BufferedWriter.RETRY_BACKOFF_CAP_MS,
+                        BufferedWriter.retryDelayAfterFailure(1_000));
+  }
+
+  /** 结局未知（还在途）与"确定失败"要区别对待：未知不重投，否则同一份数据可能在 DLQ 出现两次。 */
   /** 上报通道没交出任何投递凭据（返回 null）：这等价于"不知道去哪了"，不能算有去处。 */
   @Test
   public void reporterWithoutDeliveryHandleHoldsWatermark() {
@@ -592,6 +634,24 @@ public class BufferedWriterRecordErrorPolicyTest {
 
     private int reports() {
       return reported.size();
+    }
+  }
+
+  /** 可推进的时钟：退避按墙钟算，测试不能真的等一分钟。 */
+  private static final class MutableClock implements java.util.function.LongSupplier {
+    private long now;
+
+    private MutableClock(long start) {
+      now = start;
+    }
+
+    @Override
+    public long getAsLong() {
+      return now;
+    }
+
+    private void advance(long millis) {
+      now += millis;
     }
   }
 

@@ -18,7 +18,7 @@
         "com.aliyun.odps.kafka.connect.ErrorReporterTest",
         "com.aliyun.odps.kafka.connect.sink.BufferedWriterRecordErrorPolicyTest"
       ],
-      "min_tests": 115
+      "min_tests": 116
     },
     "integration": {
       "classes": [
