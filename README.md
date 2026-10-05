@@ -203,3 +203,5 @@ mvn test -Pintegration-tests -Dtest=TestMaxComputeSinkConnectorIntegration
 - runtime.error.topic.name: 当connect内部写入某条数据发生未知错误时, 将错误记录写入Kafka消息队列中.默认为空
 - runtime.error.topic.bootstrap.servers: 与runtime.error.topic.name搭配使用, 错误消息写入Kafka的bootstrap servers地址
 - skip_error: 是否跳过发生未知写入错误的记录, 默认false不会跳过; 如果设置为true且未配置runtime.error.topic.name,则会丢弃错误记录的写入.
+- runtime.error.topic.max.block.ms: 配置了runtime.error.topic.*时，坏记录要被投到错误topic，而producer拿错误topic的元数据是**同步等待**的——错误topic不存在、没有leader或broker不可达时，这个等待发生在写入记录的调用里（`put()`），因此**每条坏记录最多阻塞这么长时间**，同一批里的坏记录是一条一条累加的（实测：默认30秒下两条坏记录合计约60秒），并把同一任务线程上的位点提交一起拖住。默认30000毫秒（与引入本配置前的写死值一致）；调小它换来的是"错误topic不可用时更快按skip_error处理这条记录"，不是更快的正常写入。
+- skip_empty_flush: 是否跳过"这个缓冲窗口里一条记录都没攒到"时的落盘调用。默认false，即每个提交周期仍为每个分区打一次tunnel（即使没有数据可写）——实测单分区这种空落盘约2.4-2.8秒，而提交是逐分区串行的，于是空闲分区也在按offset.flush.interval.ms付这份网络往返。设为true后空窗口不再打这次往返；**只要窗口里有过记录就一定照常落盘**，水位与提交语义不变。
