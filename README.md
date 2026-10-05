@@ -211,7 +211,7 @@ mvn test -Pintegration-tests -Dtest=TestMaxComputeSinkConnectorIntegration
 "位点提交了"不等于"数据在稍后异步落盘"。这个连接器在每次提交位点之前，会**同步**把缓冲写入 MaxCompute：
 
 - `preCommit` 逐个分区调用落盘（`BufferedWriter#flushAndReset`），一个分区落完才轮到下一个；
-- 每个分区每一轮至少一次 tunnel 网络往返（小批量下实测每分区约 2.4-2.8 秒；批量变大时这份开销只会更高，这里不给倍数），
+- 每个分区每一轮至少一次 tunnel 网络往返，实测每分区 2.2-3.0 秒，而且**不随这一轮攒了多少记录变化**（同一分区分别写 1 / 100 / 2000 / 8000 条，三轮重复下来都落在同一量级，个别 0.5 秒），所以这份开销按"每分区固定成本"算：
   因此**分区数会把它乘算放大**，空闲分区也一样付（除非打开 `skip_empty_flush`）；
 - 如果配了 `runtime.error.topic.*`，坏记录还要在 `put()` 里等错误 topic 的元数据（见上面的
   `runtime.error.topic.max.block.ms`），这段时间同一线程上的位点提交也一起被拖住。
@@ -219,6 +219,9 @@ mvn test -Pintegration-tests -Dtest=TestMaxComputeSinkConnectorIntegration
 Kafka Connect 给任务关停留的总预算是 `task.shutdown.graceful.timeout.ms`（默认 5000 毫秒，
 且 worker 侧文档明写这是"总量、不是每任务"）。上面任何一项乘以分区数之后都很容易超过它——
 表现是日志里的 `Graceful stop of task ... failed`。这不改变数据安全性：位点不会越过没有落盘的记录，
-代价是关停变慢、重平衡窗口里的 lag 变大。如果这类日志影响你的运维，优先做两件事：
-把分区数与 `offset.flush.interval.ms`、`buffer_size_kb` 对齐（少而大的批次比多而小的批次提交更快），
-并按上面的两个配置收紧等待上限。
+代价是关停变慢、重平衡窗口里的 lag 变大。
+
+由于这份成本是按分区固定的，能省的地方只有"每轮要串几个分区"和"有多少轮是空转"：
+让 topic 的分区数与 task 数、`buffer_size_kb` 相匹配（少占用不写数据的分区），
+空闲场景打开 `skip_empty_flush`，再按上面两个配置收紧等待上限。**把批次调小不会让提交变快**，
+实测每轮的落盘时间与此无关。
