@@ -203,3 +203,25 @@ mvn test -Pintegration-tests -Dtest=TestMaxComputeSinkConnectorIntegration
 - runtime.error.topic.name: 当connect内部写入某条数据发生未知错误时, 将错误记录写入Kafka消息队列中.默认为空
 - runtime.error.topic.bootstrap.servers: 与runtime.error.topic.name搭配使用, 错误消息写入Kafka的bootstrap servers地址
 - skip_error: 是否跳过发生未知写入错误的记录, 默认false不会跳过; 如果设置为true且未配置runtime.error.topic.name,则会丢弃错误记录的写入.
+- runtime.error.topic.max.block.ms: 配置了runtime.error.topic.*时，坏记录要被投到错误topic，而producer拿错误topic的元数据是**同步等待**的——错误topic不存在、没有leader或broker不可达时，这个等待发生在写入记录的调用里（`put()`），因此**每条坏记录最多阻塞这么长时间**，同一批里的坏记录是一条一条累加的（实测：默认30秒下两条坏记录合计约60秒），并把同一任务线程上的位点提交一起拖住。默认30000毫秒（与引入本配置前的写死值一致）；调小它换来的是"错误topic不可用时更快按skip_error处理这条记录"，不是更快的正常写入。
+- skip_empty_flush: 是否跳过"这个缓冲窗口里一条记录都没攒到"时的落盘调用。默认false，即每个提交周期仍为每个分区打一次tunnel（即使没有数据可写）——实测单分区这种空落盘约2.4-2.8秒，而提交是逐分区串行的，于是空闲分区也在按offset.flush.interval.ms付这份网络往返。设为true后空窗口不再打这次往返；**只要窗口里有过记录就一定照常落盘**，水位与提交语义不变。
+
+### 提交路径上的等待（时间预算）
+
+"位点提交了"不等于"数据在稍后异步落盘"。这个连接器在每次提交位点之前，会**同步**把缓冲写入 MaxCompute：
+
+- `preCommit` 逐个分区调用落盘（`BufferedWriter#flushAndReset`），一个分区落完才轮到下一个；
+- 每个分区每一轮至少一次 tunnel 网络往返，实测每分区 2.2-3.0 秒，而且**不随这一轮攒了多少记录变化**（同一分区分别写 1 / 100 / 2000 / 8000 条，三轮重复下来都落在同一量级，个别 0.5 秒），所以这份开销按"每分区固定成本"算：
+  因此**分区数会把它乘算放大**，空闲分区也一样付（除非打开 `skip_empty_flush`）；
+- 如果配了 `runtime.error.topic.*`，坏记录还要在 `put()` 里等错误 topic 的元数据（见上面的
+  `runtime.error.topic.max.block.ms`），这段时间同一线程上的位点提交也一起被拖住。
+
+Kafka Connect 给任务关停留的总预算是 `task.shutdown.graceful.timeout.ms`（默认 5000 毫秒，
+且 worker 侧文档明写这是"总量、不是每任务"）。上面任何一项乘以分区数之后都很容易超过它——
+表现是日志里的 `Graceful stop of task ... failed`。这不改变数据安全性：位点不会越过没有落盘的记录，
+代价是关停变慢、重平衡窗口里的 lag 变大。
+
+由于这份成本是按分区固定的，能省的地方只有"每轮要串几个分区"和"有多少轮是空转"：
+让 topic 的分区数与 task 数、`buffer_size_kb` 相匹配（少占用不写数据的分区），
+空闲场景打开 `skip_empty_flush`，再按上面两个配置收紧等待上限。**把批次调小不会让提交变快**，
+实测每轮的落盘时间与此无关。

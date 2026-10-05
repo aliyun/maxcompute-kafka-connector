@@ -79,7 +79,23 @@ public enum ConfigParameter {
 
     //RECORD_BATCH_SIZE("record_batch_size", INT, 8000, MEDIUM, "max record size for single writer-thread"),
 
-    SKIP_ERROR("skip_error", BOOLEAN, Boolean.FALSE, LOW, "the task policy when internal errors happen, SKIP or EXIT");
+    SKIP_ERROR("skip_error", BOOLEAN, Boolean.FALSE, LOW, "the task policy when internal errors happen, SKIP or EXIT"),
+
+    /**
+     * The error reporter's producer waits this long, synchronously and per record, for the error topic's
+     * metadata before {@code send()} gives up. A dead-letter topic that does not exist (or has no leader)
+     * therefore costs up to this much of {@code put()} for every malformed record, which is also how long
+     * the commit cycle behind it is delayed. Default keeps the value that used to be hard-coded.
+     */
+    RUNTIME_ERROR_TOPIC_MAX_BLOCK_MS("runtime.error.topic.max.block.ms", LONG, 30_000L, MEDIUM,
+        "How long a single error-topic send may block waiting for topic metadata, in milliseconds"),
+
+    /**
+     * Whether a buffer window that holds no records at all still costs one tunnel round trip. Turning this
+     * off skips the flush of an empty window; it never skips a window that buffered anything.
+     */
+    SKIP_EMPTY_FLUSH("skip_empty_flush", BOOLEAN, Boolean.FALSE, MEDIUM,
+        "Skip the tunnel flush for buffer windows that hold no records. Default false keeps flushing");
 
     private final String name;
     private final ConfigDef.Type type;
@@ -130,6 +146,10 @@ public enum ConfigParameter {
 
     public int getInt(AbstractConfig config) {
         return config.getInt(name);
+    }
+
+    public long getLong(AbstractConfig config) {
+        return config.getLong(name);
     }
 
     public boolean getBoolean(AbstractConfig config) {

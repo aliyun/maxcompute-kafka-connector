@@ -26,6 +26,7 @@ import org.slf4j.LoggerFactory;
 import static com.aliyun.odps.kafka.connect.ConfigParameter.BUFFER_SIZE_KB;
 import static com.aliyun.odps.kafka.connect.ConfigParameter.FAIL_RETRY_TIMES;
 import static com.aliyun.odps.kafka.connect.ConfigParameter.PARTITION_WINDOW_TYPE;
+import static com.aliyun.odps.kafka.connect.ConfigParameter.SKIP_EMPTY_FLUSH;
 import static com.aliyun.odps.kafka.connect.ConfigParameter.SKIP_ERROR;
 import static com.aliyun.odps.kafka.connect.ConfigParameter.TIME_ZONE;
 import static com.aliyun.odps.kafka.connect.ConfigParameter.USE_NEW_PARTITION_FORMAT;
@@ -55,6 +56,8 @@ public class BufferedWriter {
     private final boolean skipError;
     private final int bufferLimitBytes;
     private final int retryTimes;
+    /** 见 {@link com.aliyun.odps.kafka.connect.ConfigParameter#SKIP_EMPTY_FLUSH}：默认 false 保持原行为。 */
+    private final boolean skipEmptyFlush;
 
     /*
       Internal states of this sink writer, could change
@@ -83,6 +86,7 @@ public class BufferedWriter {
         int timesInt = FAIL_RETRY_TIMES.getInt(config);
         this.retryTimes = timesInt < 0 ? DEFAULT_RETRY_TIMES : timesInt;
         this.skipError = SKIP_ERROR.getBoolean(config);
+        this.skipEmptyFlush = SKIP_EMPTY_FLUSH.getBoolean(config);
         this.errorReporter = errorReporter;
         reset();
     }
@@ -128,16 +132,41 @@ public class BufferedWriter {
         long flushedRecords = processedRecords;
         if (streamSession != null && streamPack != null) {
             totalBytes = streamPack.getDataSize();
-            try {
-                streamPack.flush();
-                LOGGER.info("Flush records from {} to {}.", startOffset, maxOffset);
-            } catch (IOException e) {
-                LOGGER.error("Failed to flush stream pack", e);
-                throw new RuntimeException(e);
+            // 一个窗口里没有任何已 append 的记录时，flush() 写的就是空包：它仍然是一次完整的
+            // tunnel 往返（真服务端实测每分区 2.4-2.7 秒），而 preCommit 是逐分区串行的，
+            // 于是"空闲的分区"也要按 offset.flush.interval.ms 付这份钱。
+            // 这里只跳过这一次往返：窗口照常收尾（下面的 reset 不能省，否则下一条记录会留在
+            // 旧的时间窗里，落进旧的分区）。默认 false，行为与修复前逐字一致。
+            if (skipEmptyThisWindow(flushedRecords, totalBytes)) {
+                LOGGER.debug("Skip flushing an empty buffer window (offsets {} to {}); no record was appended"
+                    + " into it, so there is nothing to persist.", startOffset, maxOffset);
+            } else {
+                try {
+                    streamPack.flush();
+                    LOGGER.info("Flush records from {} to {}.", startOffset, maxOffset);
+                } catch (IOException e) {
+                    LOGGER.error("Failed to flush stream pack", e);
+                    throw new RuntimeException(e);
+                }
             }
             reset();
         }
         return new Status(maxOffset, flushedRecords, totalBytes);
+    }
+
+    /**
+     * 这个窗口该不该真的打一次 tunnel。
+     *
+     * <p>判据只有"这个窗口空不空"这一件事：只要 append 进过记录（{@code flushedRecords > 0}）或包里
+     * 还有字节，就必须落盘——开关打开也不能改变这一点。默认（{@code skip_empty_flush=false}）恒为 true，
+     * 即与修复前逐字相同：空窗口也照样打一次往返。
+     *
+     * <p>单独抽成方法是为了让这条判据能被纯单测驱动：注入 tunnel 的构造在 PR #19 里，本仓主干上
+     * {@code BufferedWriter} 只能连真 tunnel，所以判据本身先核清楚，网络效果的证据由真服务端跑具给
+     * （见工作区 evidence/harness/run-budget-probe.sh 的 C/D 段）。
+     */
+    boolean skipEmptyThisWindow(long flushedRecords, long bytesInPack) {
+        return skipEmptyFlush && flushedRecords == 0 && bytesInPack == 0;
     }
 
     private void reset() {
