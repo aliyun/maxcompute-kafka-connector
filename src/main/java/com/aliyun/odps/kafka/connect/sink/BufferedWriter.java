@@ -4,11 +4,22 @@ import java.io.IOException;
 import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Iterator;
+import java.util.Map;
 import java.util.Objects;
+import java.util.SortedMap;
 import java.util.TimeZone;
+import java.util.TreeMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.TimeUnit;
+import java.util.function.LongSupplier;
+import java.util.concurrent.TimeoutException;
 
 import com.aliyun.odps.Odps;
 import com.aliyun.odps.OdpsException;
+import com.aliyun.odps.kafka.connect.ConfigParameter;
 import com.aliyun.odps.PartitionSpec;
 import com.aliyun.odps.data.Record;
 import com.aliyun.odps.kafka.connect.ConnectorConfig;
@@ -68,11 +79,92 @@ public class BufferedWriter {
     private long processedRecords = 0;
     private long startOffset = -1;
     private long maxOffset = -1;
+    /**
+     * 本缓冲窗口内没有落盘、也没有可上报去向的记录条数。它们同样会把 maxOffset 往前推，
+     * 所以必须单独记账，交给提交位点那一步显式说明——否则水位越过的就是一条查无此据的记录。
+     */
+    private long droppedRecords = 0;
+    /** 本缓冲窗口内转换/追加失败但已交给错误上报通道的记录条数（有去向，不等于已投递成功）。 */
+    private long reportedRecords = 0;
+    /** 累计已确认投递到错误 topic 的条数（Future 正常完成），用于把"排队"与"送达"分开说明。 */
+    private long confirmedReportedRecords = 0;
+    /**
+     * 已交给上报通道、但还没有拿到投递凭据的记录：offset → 待确认的投递。
+     *
+     * <p>{@code ErrantRecordReporter#report} 是异步的：返回的 Future 可能稍后才异常完成。修复前
+     * {@code handleFailedRecord()} 在入队那一刻就把记录记成"有去处"，水位照样推进；broker 随后
+     * 拒收时只在回调里打了一行日志，于是这条记录既不在 MaxCompute、也不在错误 topic，而已提交的
+     * offset 让它无法重放。现在未确认的记录留在这里，并且挡在提交水位前面。
+     */
+    private final SortedMap<Long, PendingReport> pendingReports = new TreeMap<Long, PendingReport>();
+
+    /**
+     * 一次 flush 里等在途投递收尾的最长时间。
+     *
+     * <p>刻意取短：{@code flushAndReset()} 发生在 {@code preCommit()} 的调用链上，等太久就是拖住 worker
+     * 的提交循环。超时不是失败 —— 没等到收尾的记录继续挡在水位前面，下一次提交再等一轮；等待只让
+     * "本次能确认的尽量确认"，不等待也不会丢数据。
+     */
+    static final long REPORT_SETTLE_TIMEOUT_MS = 5_000L;
+    /** 可缩短的实例副本：回归用例要模拟"还在途"，不能真的等 30 秒。 */
+    private long reportSettleTimeoutMs = REPORT_SETTLE_TIMEOUT_MS;
+
+    /**
+     * 投递被判定失败之后的重投退避。
+     *
+     * <p>第一次失败可以立刻补投一次（保持"这一轮就能救回来"的语义）；之后再失败就按
+     * {@code base << (attempts-1)} 退避，最长 {@link #RETRY_BACKOFF_CAP_MS}。
+     * 这条规则存在的理由：DLQ 只是短暂不可用时，分区不能因为这个 while 位点永久卡在一条记录前面
+     * ——真实 broker 上验过，只补投一次的写法在故障恢复后仍然不解锁，除非重启 task。
+     * 退避期间记录一直挡在水位前，所以"未确认不得提交"这条保证不会因为重投而放松。
+     */
+    static final long RETRY_BACKOFF_BASE_MS = 1_000L;
+    static final long RETRY_BACKOFF_CAP_MS = 60_000L;
+    /** 时钟只在回归用例里替换：退避按墙钟算，不能让测试真的等一分钟。 */
+    private LongSupplier clock = new LongSupplier() {
+        @Override
+        public long getAsLong() {
+            return System.currentTimeMillis();
+        }
+    };
+
+    /** 一条待确认记录：需要保留原始记录与错误，投递失败后还要能重投。 */
+    private static final class PendingReport {
+        private final SinkRecord record;
+        private final Throwable cause;
+        private Future<Void> delivery;
+        /** 已经发出的次数（首次上报算 1）。 */
+        private int attempts = 1;
+        /** 上一次失败后到下一次重投之间要等多久（0 表示可以立刻重投）。 */
+        private long retryDelayMs;
+        /** 下一次重投的最早时刻；等待期间这条记录仍然挡在水位前面。 */
+        private long nextAttemptAtMs;
+        /** 已判定失败、正等退避到期的重投（与"上报通道没交出凭据"是两种状态）。 */
+        private boolean awaitingRetry;
+        /** 没交出投递凭据的那种情况只报一次，别每轮 flush 刷一条 ERROR。 */
+        private boolean handlelessLogged;
+
+        private PendingReport(SinkRecord record, Throwable cause, Future<Void> delivery) {
+            this.record = record;
+            this.cause = cause;
+            this.delivery = delivery;
+        }
+    }
 
     public BufferedWriter(Odps odps, ConnectorConfig config, String project, String table, RecordConverter converter,
         ErrantRecordReporter errorReporter) {
+        this(odps, config, project, table, converter, errorReporter, OdpsUtils.getTableTunnel(odps, config));
+    }
 
-        this.tunnel = OdpsUtils.getTableTunnel(odps, config);
+    /**
+     * 注入 tunnel 的构造：让"坏记录怎么处理"这条策略可以在不连 MaxCompute 的情况下被逐条驱动和断言
+     * （{@code StreamUploadSession} / {@code StreamRecordPack} 在 SDK 里都是接口）。
+     * 生产路径请使用上一个构造函数。
+     */
+    BufferedWriter(Odps odps, ConnectorConfig config, String project, String table, RecordConverter converter,
+        ErrantRecordReporter errorReporter, TableTunnel tunnel) {
+
+        this.tunnel = Objects.requireNonNull(tunnel);
         this.project = Objects.requireNonNull(project);
         this.table = Objects.requireNonNull(table);
         this.converter = Objects.requireNonNull(converter);
@@ -100,15 +192,15 @@ public class BufferedWriter {
             }
         }
         try {
+            // reusedRecord 整个窗口只创建一次并被逐条复用：上一条写过、这一条没写的列会原样留着，
+            // 于是"值为 NULL 的墓碑记录"或"JSON 里缺字段"会落出一条带着别的记录内容的水印行。
+            // 转换器契约（RecordConverter#convert 的注释：reuse this object）要求逐条自足，这里在调用前清空。
+            clearRecord(reusedRecord);
             converter.convert(record, reusedRecord);
             streamPack.append(reusedRecord);
             processedRecords++;
         } catch (Throwable e) {
-            if (errorReporter != null) {
-                errorReporter.report(record, e);
-            } else if (!skipError) {
-                throw new RuntimeException(e);
-            }
+            handleFailedRecord(record, e);
         }
         maxOffset = Math.max(maxOffset, record.kafkaOffset());
         return streamPack.getDataSize() >= bufferLimitBytes;
@@ -121,11 +213,71 @@ public class BufferedWriter {
         return processedRecords > 0;
     }
 
+    /**
+     * 一条没落盘的记录只有三种去向：上报（有去处）、抛错（让 worker 决定重试或失败）、被跳过。
+     * 只有"被跳过"是既没落盘也没去处的，它必须留下带 offset 的日志并计入 droppedRecords；
+     * 原实现在 errorReporter == null 且 skip_error=true 时连一行日志都没有，水位却照样前进。
+     *
+     * <p>上报通道自身抛错（例如 DLQ 生产者不可用）不等于这条记录有了去处：按同样的策略重走一遍，
+     * 即未开启容错时抛出去，开启容错时按丢弃记账。
+     */
+    private void handleFailedRecord(SinkRecord record, Throwable cause) {
+        if (errorReporter != null) {
+            try {
+                Future<Void> delivery = errorReporter.report(record, cause);
+                pendingReports.put(record.kafkaOffset(), new PendingReport(record, cause, delivery));
+                reportedRecords++;
+                if (LOGGER.isDebugEnabled()) {
+                    LOGGER.debug("Reported record {}-{}@{} to the error topic instead of writing it; the "
+                            + "committed offset will not move past it until the send is confirmed",
+                        record.topic(), record.kafkaPartition(), record.kafkaOffset());
+                }
+                return;
+            } catch (Throwable reportError) {
+                if (reportError != cause) {
+                    reportError.addSuppressed(cause);
+                }
+                if (!skipError) {
+                    throw new RuntimeException(reportError);
+                }
+                cause = reportError;
+            }
+        }
+        if (!skipError) {
+            throw new RuntimeException(cause);
+        }
+        droppedRecords++;
+        LOGGER.error("skip_error=true: dropping record {}-{}@{} without writing it to MaxCompute and without an "
+                + "error reporter, so the committed offset will move past it with no destination for this record. "
+                + "Configure both {} and {} to route such records to a dead-letter topic instead.",
+            record.topic(), record.kafkaPartition(), record.kafkaOffset(),
+            ConfigParameter.RUNTIME_ERROR_TOPIC_NAME.getName(),
+            ConfigParameter.RUNTIME_ERROR_TOPIC_BOOTSTRAP_SERVERS.getName(),
+            cause);
+    }
+
+    private static void clearRecord(Record record) {
+        if (record == null) {
+            return;
+        }
+        for (int i = 0; i < record.getColumnCount(); i++) {
+            record.set(i, null);
+        }
+    }
+
     public synchronized Status flushAndReset() {
         long totalBytes = 0;
-        // 必须在 reset() 之前取快照：原来 return 读的是已被 reset 清零的字段，
+        // 先收尾在途的错误上报，再决定这次能把水位推到哪：顺序反了就是把"未确认"当成"已投递"。
+        settlePendingReports();
+        // 所有计数都必须在 reset() 之前取快照：原来 return 读的是已被清零的 processedRecords，
         // 落盘条数恒为 0（SinkStatusContext 的累计与 Total write 日志跟着一起失真）。
+        // dropped/reported 的结转与 preCommit 那句"写了多少条"都依赖这个顺序。
+        // PR #18 与本项在 flushAndReset() 上是同一处修复：先落的保留，rebase 后合成这一段。
         long flushedRecords = processedRecords;
+        long flushedDropped = droppedRecords;
+        long flushedReported = reportedRecords;
+        droppedRecords = 0;
+        reportedRecords = 0;
         if (streamSession != null && streamPack != null) {
             totalBytes = streamPack.getDataSize();
             try {
@@ -137,13 +289,198 @@ public class BufferedWriter {
             }
             reset();
         }
-        return new Status(maxOffset, flushedRecords, totalBytes);
+        // 水位只能停在第一条未确认记录之前。它下面的记录会被重新消费：已落盘的那些因此可能重复写一次
+        // （本连接器本来就是 at-least-once），而未确认的那条要么之后送达、要么一直挡着 —— 两个结果都比
+        // "记录哪儿也没去、位点却过去了"好。
+        long heldAtOffset = pendingReports.isEmpty() ? -1L : pendingReports.firstKey();
+        long commitableOffset = heldAtOffset < 0 ? maxOffset : Math.min(maxOffset, heldAtOffset - 1);
+        if (heldAtOffset >= 0) {
+            LOGGER.warn("Commit offset held at {} (highest record seen was {}): {} record(s) routed to the "
+                    + "runtime error topic have no confirmed delivery yet. Definitively rejected sends are "
+                    + "re-attempted with exponential backoff (up to {}s apart); records whose outcome is still "
+                    + "unknown are not re-sent. Until a delivery is confirmed the watermark cannot move past "
+                    + "them, so records already written above them may be written again on replay.",
+                heldAtOffset, maxOffset, pendingReports.size(), RETRY_BACKOFF_CAP_MS / 1000);
+        }
+        return new Status(commitableOffset, flushedRecords, totalBytes, flushedDropped, flushedReported,
+            pendingReports.size(), heldAtOffset);
+    }
+
+    /**
+     * 收一轮投递凭据：正常完成的移出等待队列；异常完成的立刻重投一次（并继续挡在水位前）；
+     * 还在途的用剩余预算等一次，超时则原样留着。没有 Future 可依据的上报（返回 null）按未确认处理 ——
+     * 拿不到凭据就不能算送达。
+     */
+    private void settlePendingReports() {
+        if (pendingReports.isEmpty()) {
+            return;
+        }
+        long deadline = clock.getAsLong() + reportSettleTimeoutMs;
+        Iterator<Map.Entry<Long, PendingReport>> iterator = pendingReports.entrySet().iterator();
+        int delivered = 0;
+        int requeued = 0;
+        int backingOff = 0;
+        while (iterator.hasNext()) {
+            Map.Entry<Long, PendingReport> entry = iterator.next();
+            PendingReport pending = entry.getValue();
+            SinkRecord failed = pending.record;
+
+            // 已判定失败、正在等退避到期的：到期才重投，没到期就继续挡在水位前面（不发新投递，避免堆积）
+            if (pending.awaitingRetry) {
+                long now = clock.getAsLong();
+                if (now < pending.nextAttemptAtMs) {
+                    backingOff++;
+                    continue;
+                }
+                if (attemptReport(pending)) {
+                    requeued++;
+                }
+                continue;
+            }
+
+            if (pending.delivery == null) {
+                if (!pending.handlelessLogged) {
+                    pending.handlelessLogged = true;
+                    LOGGER.error("Record {}-{}@{} was routed to the error topic but the reporter returned no "
+                            + "delivery handle, so its delivery cannot be confirmed; the committed offset stays "
+                            + "before it. This is reported once per record, not once per flush.",
+                        failed.topic(), failed.kafkaPartition(), failed.kafkaOffset());
+                }
+                continue;
+            }
+
+            long remainingMillis = deadline - clock.getAsLong();
+            if (remainingMillis <= 0 && !pending.delivery.isDone()) {
+                continue;
+            }
+            try {
+                if (remainingMillis > 0) {
+                    pending.delivery.get(remainingMillis, TimeUnit.MILLISECONDS);
+                } else {
+                    pending.delivery.get();
+                }
+            } catch (TimeoutException stillInFlight) {
+                // 结局未知：不重投（同一份数据不该因为两次 flush 抢跑而在 DLQ 里出现两次），只继续挡着
+                LOGGER.info("Record {}-{}@{} is still in flight to the error topic after {}ms; the committed "
+                        + "offset stays before it.", failed.topic(), failed.kafkaPartition(),
+                    failed.kafkaOffset(), reportSettleTimeoutMs);
+                continue;
+            } catch (ExecutionException | InterruptedException | CancellationException deliveryFailure) {
+                if (deliveryFailure instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                    continue;
+                }
+                pending.attempts++;
+                long delay = retryDelayAfterFailure(pending.attempts);
+                if (delay <= 0L) {
+                    // 第一次失败：立刻补投一次（本轮就能救回来的语义保持原样）
+                    if (attemptReport(pending)) {
+                        requeued++;
+                    }
+                    continue;
+                }
+                pending.awaitingRetry = true;
+                pending.nextAttemptAtMs = clock.getAsLong() + delay;
+                backingOff++;
+                LOGGER.warn("Report attempt #{} of record {}-{}@{} to the error topic was rejected again ({}); "
+                        + "next re-attempt no earlier than {}ms later. The committed offset stays before it "
+                        + "until a send is confirmed.",
+                    pending.attempts - 1, failed.topic(), failed.kafkaPartition(), failed.kafkaOffset(),
+                    String.valueOf(deliveryFailure.getMessage()), delay);
+                continue;
+            }
+
+            // 投递确认成功：解除这条记录的阻塞
+            iterator.remove();
+            delivered++;
+            confirmedReportedRecords++;
+            if (pending.attempts > 1) {
+                LOGGER.info("Record {}-{}@{} was confirmed on report attempt #{} after earlier rejections; the "
+                        + "committed offset can now move past it.", failed.topic(), failed.kafkaPartition(),
+                    failed.kafkaOffset(), pending.attempts);
+            }
+        }
+        if (delivered > 0 || requeued > 0) {
+            LOGGER.info("Error-topic deliveries settled this flush: confirmed {}, re-attempted {}, backing off "
+                    + "{}, still unconfirmed {}", delivered, requeued, backingOff, pendingReports.size());
+        }
+    }
+
+    /**
+     * 第 N 次投递失败之后，到第 N+1 次尝试之前要等多久。
+     *
+     * <p>第一次失败可以立刻补投（保持修复前既有的"本轮重试一次"语义）；此后指数退避，上限
+     * {@link #RETRY_BACKOFF_CAP_MS}。上限存在的意义是：DLQ 长时间不可用时，一个分区里几百条待确认
+     * 记录不应该每 5 秒就 collectively 重投一轮 —— 但也不能像只补投一次的写法那样，故障恢复之后
+     * 再也不解锁。
+     */
+    static long retryDelayAfterFailure(int attempts) {
+        if (attempts <= 2) {
+            return 0L;
+        }
+        int shift = Math.min(attempts - 3, 16);
+        long delay = RETRY_BACKOFF_BASE_MS << shift;
+        return Math.min(delay, RETRY_BACKOFF_CAP_MS);
+    }
+
+    /**
+     * 真的把重投发出去。返回 false 表示这次连发都发不出去（上报通道同步抛错）：
+     * 这条记录仍然按"未确认"挡在水位前，并按退避再排一次，绝不因为发不出去就放过位点。
+     */
+    private boolean attemptReport(PendingReport pending) {
+        SinkRecord record = pending.record;
+        try {
+            pending.delivery = errorReporter.report(record, pending.cause);
+            pending.awaitingRetry = false;
+            LOGGER.warn("Re-attempted report of record {}-{}@{} to the error topic (attempt #{})",
+                record.topic(), record.kafkaPartition(), record.kafkaOffset(), pending.attempts);
+            return true;
+        } catch (Throwable retryError) {
+            long delay = retryDelayAfterFailure(pending.attempts + 1);
+            pending.attempts++;
+            pending.awaitingRetry = true;
+            pending.nextAttemptAtMs = clock.getAsLong() + Math.max(delay, RETRY_BACKOFF_BASE_MS);
+            LOGGER.error("Cannot even re-attempt the report of record {}-{}@{}: {}; the committed offset stays "
+                    + "before it and another re-attempt is scheduled in {}ms.",
+                record.topic(), record.kafkaPartition(), record.kafkaOffset(), retryError.toString(),
+                Math.max(delay, RETRY_BACKOFF_BASE_MS));
+            return false;
+        }
+    }
+
+    /** 只在同包的回归用例里使用：把等待在途投递的预算改成毫秒级。 */
+    void setReportSettleTimeoutMs(long timeoutMs) {
+        this.reportSettleTimeoutMs = timeoutMs;
+    }
+
+    /** 只在同包的回归用例里使用：换掉墙钟，让指数退避可以被确定性推进。 */
+    void setClockForTest(LongSupplier clock) {
+        this.clock = clock;
+    }
+
+    /** 只在同包的回归用例里使用：当前"已判定失败、等待退避到期"的重投时刻。 */
+    long nextReportAttemptAt(int index) {
+        int i = 0;
+        for (PendingReport pending : pendingReports.values()) {
+            if (i++ == index) {
+                return pending.nextAttemptAtMs;
+            }
+        }
+        return -1L;
+    }
+
+    /** 尚未确认投递的记录条数；调用方用它判断"这次提交为什么没把水位推满"。 */
+    public synchronized long getUnconfirmedReportedRecords() {
+        return pendingReports.size();
     }
 
     private void reset() {
         processedRecords = 0;
         batchInsertTime = -1;
         startOffset = -1;
+        // pendingReports 不在此清空：它们是跨窗口的投递凭据，清空等于把未确认的记录当作已送达。
+        // droppedRecords / reportedRecords 不在此清零：它们随 Status 交给 flushAndReset 的调用方结转，
+        // 在这里清零等于把计数丢掉，preCommit 就再也说不出"这次提交越过了几条没落盘的记录"。
     }
 
     private void initStreamUploadSession(long timestamp) throws OdpsException, IOException {

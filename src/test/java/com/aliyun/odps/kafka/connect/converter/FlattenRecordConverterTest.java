@@ -108,4 +108,53 @@ public class FlattenRecordConverterTest {
       Assert.assertTrue(e.getMessage(), e.getMessage().contains("Unsupported mode for FlattenConverter"));
     }
   }
+
+  /** 显式的 JSON null 字段：这一列写成 NULL，而不是把整条记录变成一条 NullPointerException。 */
+  @Test
+  public void explicitJsonNullFieldValueWritesNullColumn() throws Exception {
+    Record out = newRecord();
+    converter().convert(sinkRecord(null, "{\"id\":null,\"name\":\"x\"}"), out);
+    Assert.assertNull("显式 null 不是坏记录", out.get("id"));
+    Assert.assertEquals("x", out.getString("name"));
+  }
+
+  /** 字段值为 null 且嵌套对象为 null：同样只是这一列 NULL。 */
+  @Test
+  public void nullNestedObjectWritesNullColumn() throws Exception {
+    Record out = newRecord();
+    converter().convert(sinkRecord(null, "{\"id\":1,\"extend\":null}"), out);
+    Assert.assertNull(out.get("extend"));
+    Assert.assertEquals(Long.valueOf(1L), out.getBigint("id"));
+  }
+
+  /** 类型变化：BIGINT 列拿到文本 "abc" 必须报错（不能静默 NULL）。 */
+  @Test
+  public void nonNumericTextForBigintColumnFails() {
+    try {
+      converter().convert(sinkRecord(null, "{\"id\":\"abc\"}"), newRecord());
+      Assert.fail("类型不匹配必须报错");
+    } catch (Exception e) {
+      Assert.assertTrue(String.valueOf(e), e.getMessage().contains("abc"));
+    }
+  }
+
+  /** 坏编码：替换字符原样透传。 */
+  @Test
+  public void replacementCharactersPassThroughUnchanged() throws Exception {
+    Record out = newRecord();
+    converter().convert(sinkRecord(null, "{\"name\":\"a\uFFFDb\"}"), out);
+    Assert.assertEquals("a\uFFFDb", out.getString("name"));
+  }
+
+  /** 超长值：转换阶段不拦截，交给落盘那一步（处置见 BufferedWriterRecordErrorPolicyTest）。 */
+  @Test
+  public void oversizedStringValueIsAcceptedByTheConverter() throws Exception {
+    StringBuilder big = new StringBuilder();
+    for (int i = 0; i < 500000; i++) {
+      big.append('x');
+    }
+    Record out = newRecord();
+    converter().convert(sinkRecord(null, "{\"name\":\"" + big + "\"}"), out);
+    Assert.assertEquals(500000, out.getString("name").length());
+  }
 }
