@@ -222,8 +222,9 @@ public class BufferedWriter {
      * 只有"被跳过"是既没落盘也没去处的，它必须留下带 offset 的日志并计入 droppedRecords；
      * 原实现在 errorReporter == null 且 skip_error=true 时连一行日志都没有，水位却照样前进。
      *
-     * <p>上报通道自身抛错（例如 DLQ 生产者不可用）不等于这条记录有了去处：按同样的策略重走一遍，
-     * 即未开启容错时抛出去，开启容错时按丢弃记账。
+     * <p>上报通道自身抛错（例如 DLQ 生产者不可用）不等于这条记录有了去处：未开启容错时照样抛出去；
+     * 开启容错时也<strong>不能</strong>记成丢弃——去处是配好的错误 topic，只是这一次没送出去。所以它留成
+     * 一条"已交给错误通道但未确认"的记录，与异步被 broker 拒收走同一条有界退避，水位停在它之前。
      */
     private void handleFailedRecord(SinkRecord record, Throwable cause) {
         if (errorReporter != null) {
@@ -244,7 +245,12 @@ public class BufferedWriter {
                 if (!skipError) {
                     throw new RuntimeException(reportError);
                 }
-                cause = reportError;
+                // 第一次调用就同步抛错：连投递凭据都没交出来，这条记录既没进 MaxCompute 也没进错误 topic。
+                // 原来这里落到下面的 droppedRecords++，而 write() 紧接着把 maxOffset 推过它，于是提交水位会
+                // 越过一条查无此据的记录（评审 11-05 的 P1）。现在把它留成待重投，交给 settlePendingReports()
+                // 按与异步拒收同一条有界退避继续投，等待期间水位停在它之前。
+                holdForReattempt(record, cause, reportError);
+                return;
             }
         }
         if (!skipError) {
@@ -258,6 +264,29 @@ public class BufferedWriter {
             ConfigParameter.RUNTIME_ERROR_TOPIC_NAME.getName(),
             ConfigParameter.RUNTIME_ERROR_TOPIC_BOOTSTRAP_SERVERS.getName(),
             cause);
+    }
+
+    /**
+     * 上报通道连投递凭据都没交出来（首次调用即同步抛错）时，把这条记录留成"已判定失败、待重投"。
+     *
+     * <p>与异步被拒收唯一的区别是这里没有 Future 可等，所以直接进入 awaitingRetry：退避到期后由
+     * settlePendingReports() 重新调用 report()，交出凭据之后回到正常的确认流程。
+     * 计数上它算"已交给错误通道但未确认"（reportedRecords），不算"无去处被丢弃"（droppedRecords）：
+     * 去处是配置好的错误 topic，只是这一次没送出去。
+     * 原始失败原因随记录一起留着，重投成功后错误 topic 里那条报文带的仍然是它。
+     */
+    private void holdForReattempt(SinkRecord record, Throwable cause, Throwable reportError) {
+        PendingReport pending = new PendingReport(record, cause, null);
+        pending.awaitingRetry = true;
+        pending.nextAttemptAtMs = clock.getAsLong() + Math.max(retryDelayAfterFailure(pending.attempts + 1), 0L);
+        pendingReports.put(record.kafkaOffset(), pending);
+        reportedRecords++;
+        LOGGER.error("The error reporter threw before handing back a delivery handle for record {}-{}@{} ({}); "
+                + "this record is kept waiting in front of the committed offset because its original failure ({}) "
+                + "has no destination yet. It is re-attempted with the same bounded backoff used for rejected "
+                + "sends, and the offset can only move past it once a send is confirmed.",
+            record.topic(), record.kafkaPartition(), record.kafkaOffset(), reportError.toString(),
+            cause.toString());
     }
 
     private static void clearRecord(Record record) {

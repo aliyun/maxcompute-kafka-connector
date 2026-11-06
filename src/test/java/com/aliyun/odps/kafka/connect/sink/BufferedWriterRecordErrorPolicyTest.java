@@ -131,17 +131,64 @@ public class BufferedWriterRecordErrorPolicyTest {
     Assert.assertEquals(1L, status.getReportedRecords());
   }
 
-  /** 上报通道自己抛错（DLQ 生产者不可用）+ 容错开启：这条记录依然没有去处，按丢弃记账而不是悄悄成功。 */
+  /**
+   * 上报通道在第一次调用就同步抛错（连 report() 的 Future 都没交出来，DLQ 生产者起不来就是这一形）：
+   * 这条记录既没进 MaxCompute 也没进错误 topic，所以它不能记成"有记账的丢弃"。修复前它落到
+   * droppedRecords++，而 write() 紧接着把 maxOffset 推过它，下一次提交就越过一条查无此据的记录
+   * （评审 11-05 的 P1）。现在它留成未确认的待重投：水位停在它之前，且不会改口记成丢弃。
+   */
   @Test
-  public void reporterFailureFallsBackToAccountedDrop() {
+  public void firstSynchronousReporterFailureHoldsWatermarkInsteadOfDropping() {
     FakePack pack = new FakePack();
     BufferedWriter writer = writer(true, new ThrowingReporter(), pack, new ThrowingConverter());
+    MutableClock clock = new MutableClock(1_000L);
+    writer.setClockForTest(clock);
 
     writer.write(sinkRecord(5L, null, "junk"));
 
-    SinkStatusContext.Status status = writer.flushAndReset();
-    Assert.assertEquals(1L, status.getDroppedRecords());
-    Assert.assertEquals(0L, status.getReportedRecords());
+    SinkStatusContext.Status held = writer.flushAndReset();
+    Assert.assertEquals("配了错误通道就不能记成丢弃", 0L, held.getDroppedRecords());
+    Assert.assertEquals("记为已交给错误通道但未确认", 1L, held.getReportedRecords());
+    Assert.assertEquals(1L, held.getUnconfirmedReportedRecords());
+    Assert.assertEquals("水位必须停在这条记录之前", 5L, held.getHeldAtOffset());
+    Assert.assertEquals("同步抛错不能把可提交位点推过这条记录", 4L, held.getMaxOffset());
+
+    // 通道一直不给凭据：一直挡着，退避到期再投，而不是改记成丢弃后放行水位
+    clock.advance(1_000L);
+    SinkStatusContext.Status again = writer.flushAndReset();
+    Assert.assertEquals(0L, again.getDroppedRecords());
+    Assert.assertEquals(1L, again.getUnconfirmedReportedRecords());
+    Assert.assertEquals(5L, again.getHeldAtOffset());
+    Assert.assertEquals(4L, again.getMaxOffset());
+  }
+
+  /**
+   * 同一条记录的恢复面：通道下一次能交出凭据时，重投被确认，水位才允许越过它，
+   * 而且这条记录只被投出去一次（不在 DLQ 里出现两份）。
+   */
+  @Test
+  public void synchronousFailureIsRetriedAndReleasedOnceTheReporterWorks() {
+    FakePack pack = new FakePack();
+    RecoveringReporter reporter = new RecoveringReporter();
+    BufferedWriter writer = writer(true, reporter, pack, new ThrowingConverter());
+    MutableClock clock = new MutableClock(1_000L);
+    writer.setClockForTest(clock);
+
+    writer.write(sinkRecord(5L, null, "junk"));
+    Assert.assertEquals("report() 第一次被调用", 1, reporter.calls());
+
+    SinkStatusContext.Status held = writer.flushAndReset();
+    Assert.assertEquals("本轮就补投一次（与异步拒收同一套语义）", 2, reporter.calls());
+    Assert.assertEquals(4L, held.getMaxOffset());
+    Assert.assertEquals(1L, held.getUnconfirmedReportedRecords());
+
+    // 第二次交出的是已完成的投递凭据：下一轮收尾确认它，水位才推过去
+    SinkStatusContext.Status released = writer.flushAndReset();
+    Assert.assertEquals(5L, released.getMaxOffset());
+    Assert.assertEquals(0L, released.getUnconfirmedReportedRecords());
+    Assert.assertEquals(-1L, released.getHeldAtOffset());
+    Assert.assertEquals("已确认的投递不重复发送", 2, reporter.calls());
+    Assert.assertEquals(0L, released.getDroppedRecords());
   }
 
   /** 上报通道抛错 + 容错关闭：必须抛出去，不能因为"配了 reporter"就把它当成已处理。 */
@@ -667,6 +714,24 @@ public class BufferedWriterRecordErrorPolicyTest {
     @Override
     public Future<Void> report(SinkRecord record, Throwable error) {
       throw new IllegalStateException("error topic producer is down");
+    }
+  }
+
+  /** 第一次调用同步抛错、之后就正常交出投递凭据的上报通道：模拟 DLQ 生产者刚好起来的那一刻。 */
+  private static final class RecoveringReporter implements ErrantRecordReporter {
+    private int calls;
+
+    @Override
+    public Future<Void> report(SinkRecord record, Throwable error) {
+      calls++;
+      if (calls == 1) {
+        throw new IllegalStateException("error topic producer is starting up");
+      }
+      return completedDelivery();
+    }
+
+    int calls() {
+      return calls;
     }
   }
 }

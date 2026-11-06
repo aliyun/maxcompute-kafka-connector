@@ -241,6 +241,11 @@ Kafka Connect 给任务关停留的总预算是 `task.shutdown.graceful.timeout.
 
 - 第三条路径以前是完全静默的：既没有日志也不计数，提交位点却已经前进，事后无法判断这段 offset 里有没有数据真正落盘。现在每条被丢弃的记录都会计入分区累计，并在 `preCommit` 的日志里与被提交的水位一起写出（`Total write ... skipped N records without an error destination` 出现在任务 flush/close 时）。仍建议要么配错误 topic，要么保持 `skip_error=false`。
 - 第二行的水位规则是本版本的行为变更，理由是异步投递的结局在 `preCommit` 之前才揭晓：修复前记录一进发送队列就算"有去处"、水位照常推进，broker 随后拒收时只在回调里打一行日志，于是这条记录既不在 MaxCompute（转换失败没写进去）也不在错误 topic（投递被拒），而已提交的位点使它无法重放——数据永久消失。现在等待确认的预算是每次 flush 5 秒（`preCommit` 在 worker 的提交链路上，不能久等），超时不报错、只是继续挡着。代价写在测试里：被挡记录**之上**已经落盘的记录会在重放时再写一次（重复条数在单测里被断言为有界），这个重复比静默丢数好，因为本连接器本来就是 at-least-once。
+- 上报通道**第一次调用就同步抛错**（连 `report()` 返回的投递凭据都没交出来：错误 topic 的 producer 起不来，
+  或这条记录的某个字段让构造投递报文时直接抛）也归第二行那条规则，不算第三行的"丢弃"：它被留成"已交给错误
+  通道但未确认"，与异步被拒收共用同一条有界退避重投，等待期间水位停在它之前，直到某一次投递被确认为止。
+  修复前它落到 `droppedRecords++`，而同一次 `write()` 已经把 maxOffset 推过这条记录，于是提交位点会越过一条
+  既不在 MaxCompute 也不在错误 topic 的记录——这正是本项在上一段里承诺不会发生的那件事。
 - 两条 DLQ 只能选一条：Kafka Connect 平台的 `errors.tolerance` / `errors.deadletterqueue.topic.name` 依赖 task 把异常抛出 `put()`；`skip_error=true` 时本连接器不抛，平台侧收不到任何记录。想用平台 DLQ 就保持 `skip_error=false`。
 - 错误 topic 里的载荷是文本化的原始 key/value：`String` 原样；`Struct`/`Map` 序列化成 JSON；`byte[]` 用 base64 并在 header `mc-connect-payload-encoding: base64` 标注；同时带 `mc-connect-error`（异常文本）、`mc-connect-origin-topic` / `-partition` / `-offset` 三个来源坐标 header，便于回溯是哪条记录被退回。
 - 复用的记录载体在每条转换前会被清空：`format=JSON` 遇到 value 为 NULL 的墓碑记录、`format=FLATTEN` 遇到 JSON 里缺失的字段时，对应列写 NULL，而不是沿用上一条记录的值（修复前会静默多出一行带着别的记录内容的数据）；`format=FLATTEN` 遇到显式的 JSON `null` 字段值也写成 NULL，不再把整条记录变成 `NullPointerException`。
