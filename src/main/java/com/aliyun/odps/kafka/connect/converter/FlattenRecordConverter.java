@@ -64,6 +64,12 @@ public class FlattenRecordConverter implements RecordConverter {
             checkColumnExist(key);
 
             Object value = entry.getValue();
+            if (value == null) {
+                // JSON 里显式的 null 就是这一列为 NULL：原来这里直接 value.toString()，
+                // 一条 {"id":null} 会把整条记录变成一条 NullPointerException（进错误分支）。
+                // 列的清空由 BufferedWriter 在复用载体前统一完成，这里跳过即保持 NULL。
+                continue;
+            }
             try {
                 String
                   strValue =

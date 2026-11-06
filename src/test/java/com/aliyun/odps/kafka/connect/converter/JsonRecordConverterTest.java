@@ -102,4 +102,84 @@ public class JsonRecordConverterTest {
       Assert.assertTrue(e.getMessage(), e.getMessage().contains("Unsupported mode for jsonConverter"));
     }
   }
+
+  // ---- 脏数据矩阵（本项验收 A1）：NULL / 字段缺失 / 超长 / 坏编码 ----
+
+  /**
+   * 墓碑记录（value 为 NULL）：转换器不写 value 这一列。它必须被理解为"这一列是 NULL"，
+   * 而不是"保持载体原样"——载体是否干净由调用方（BufferedWriter）负责，
+   * 跨记录的残留由 BufferedWriterRecordErrorPolicyTest 端到端钉住。
+   */
+  @Test
+  public void nullValueTombstoneLeavesTheValueColumnUnset() throws Exception {
+    Record out = newRecord();
+    new JsonRecordConverter(Mode.VALUE).convert(sinkRecord(null, "{\"a\":1}"), out);
+    Assert.assertNotNull(((JsonValue) out.get(RecordConverter.VALUE)));
+
+    Record tombstone = newRecord();
+    new JsonRecordConverter(Mode.VALUE).convert(sinkRecord(null, null), tombstone);
+    Assert.assertNull("value 为 NULL 时不写这一列", tombstone.get(RecordConverter.VALUE));
+    Assert.assertEquals(Fixtures.TOPIC_NAME, tombstone.getString(RecordConverter.TOPIC));
+    Assert.assertEquals(Long.valueOf(Fixtures.OFFSET), tombstone.getBigint(RecordConverter.OFFSET));
+  }
+
+  /** KEY 模式的墓碑：key 为 NULL 时同理，只要求"不写这一列"。 */
+  @Test
+  public void nullKeyLeavesTheKeyColumnUnset() throws Exception {
+    Record out = newRecord();
+    new JsonRecordConverter(Mode.KEY).convert(sinkRecord(null, "ignored"), out);
+    Assert.assertNull(out.get(RecordConverter.KEY));
+  }
+
+  /**
+   * 畸形 JSON 文本（JSON 列）：在写入载体时就被 SDK 的类型校验拒掉（IllegalArgumentException），
+   * 不会带着坏语法进表。异常信息只有 "Illegal argument for JsonValue value."，
+   * 不含原 payload —— 定位一条坏记录要靠错误分支日志里的 topic/partition/offset。
+   */
+  @Test
+  public void malformedJsonTextIsRejectedAtConvertTime() throws Exception {
+    Record out = newRecord();
+    try {
+      new JsonRecordConverter(Mode.VALUE).convert(sinkRecord(null, "{not json at all"), out);
+      Assert.fail("畸形 JSON 必须报错");
+    } catch (IllegalArgumentException expected) {
+      Assert.assertNull("载体没被写脏", out.get(RecordConverter.VALUE));
+    }
+  }
+
+  /** 超长载荷（> 列大小上限量级）不在转换阶段拦截：错误只会在落盘时出现。 */
+  @Test
+  public void oversizedPayloadIsAcceptedByTheConverter() throws Exception {
+    StringBuilder big = new StringBuilder("{\"a\":\"");
+    for (int i = 0; i < 200000; i++) {
+      big.append('x');
+    }
+    big.append("\"}");
+    Record out = newRecord();
+    new JsonRecordConverter(Mode.VALUE).convert(sinkRecord(null, big.toString()), out);
+    Assert.assertTrue(out.get(RecordConverter.VALUE) instanceof JsonValue);
+  }
+
+  /** 坏编码：替换字符（U+FFFD）原样透传，转换器不做编码校验。 */
+  @Test
+  public void replacementCharactersPassThroughUnchanged() throws Exception {
+    Record out = newRecord();
+    new JsonRecordConverter(Mode.VALUE).convert(sinkRecord(null, "{\"a\":\"bad\uFFFDencoding\"}"), out);
+    Assert.assertTrue(((JsonValue) out.get(RecordConverter.VALUE)).toString().contains("\uFFFD"));
+  }
+
+  /** 类型变化（表列类型与载荷不匹配）：JSON 载荷写进 STRING 列会在转换阶段就被拒，不会静默转成文本。 */
+  @Test
+  public void jsonPayloadIntoAStringColumnFails() throws Exception {
+    TableSchema stringColumnSchema = Fixtures.schemaWithFixedColumns(
+        col(RecordConverter.KEY, com.aliyun.odps.type.TypeInfoFactory.STRING),
+        col(RecordConverter.VALUE, com.aliyun.odps.type.TypeInfoFactory.STRING));
+    try {
+      new JsonRecordConverter(Mode.VALUE).convert(sinkRecord(null, "{\"a\":1}"),
+          new ArrayRecord(stringColumnSchema));
+      Assert.fail("JSON 载荷写进 STRING 列必须报错");
+    } catch (RuntimeException expected) {
+      Assert.assertTrue(String.valueOf(expected), expected.getMessage().contains("STRING"));
+    }
+  }
 }
